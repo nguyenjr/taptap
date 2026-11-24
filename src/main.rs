@@ -2,6 +2,7 @@
 
 mod audio;
 mod cursor;
+mod hand_art;
 mod physics_render;
 
 use audio::AudioEngine;
@@ -48,6 +49,17 @@ enum InputEvent {
     LeftDown,
     LeftUp,
     RightEvent,
+}
+
+#[derive(Clone, Copy)]
+enum Command {
+    ToggleActive,
+    TogglePresentation,
+    ToggleMute,
+    ScaleUp,
+    ScaleDown,
+    SetScalePreset(u32),
+    Quit,
 }
 
 static EVENT_TX: OnceLock<Sender<InputEvent>> = OnceLock::new();
@@ -359,6 +371,76 @@ fn adjust_scale_by_step(delta: i32, controls: &TrayControls) {
     controls.sync_size_checks(next);
 }
 
+fn command_from_hotkey(wparam: WPARAM) -> Option<Command> {
+    match wparam.0 as i32 {
+        HOTKEY_TOGGLE_ACTIVE => Some(Command::ToggleActive),
+        HOTKEY_TOGGLE_PRESENTATION => Some(Command::TogglePresentation),
+        HOTKEY_SIZE_UP => Some(Command::ScaleUp),
+        HOTKEY_SIZE_DOWN => Some(Command::ScaleDown),
+        HOTKEY_QUIT => Some(Command::Quit),
+        _ => None,
+    }
+}
+
+fn command_from_menu(event: &MenuEvent, controls: &TrayControls) -> Option<Command> {
+    if event.id == controls.item_active.id() {
+        Some(Command::ToggleActive)
+    } else if event.id == controls.item_pres.id() {
+        Some(Command::TogglePresentation)
+    } else if event.id == controls.item_mute.id() {
+        Some(Command::ToggleMute)
+    } else if event.id == controls.item_size_up.id() {
+        Some(Command::ScaleUp)
+    } else if event.id == controls.item_size_down.id() {
+        Some(Command::ScaleDown)
+    } else if event.id == controls.item_quit.id() {
+        Some(Command::Quit)
+    } else {
+        controls
+            .size_items
+            .iter()
+            .find(|(_, item)| event.id == item.id())
+            .map(|(pct, _)| Command::SetScalePreset(*pct))
+    }
+}
+
+fn apply_command(command: Command, controls: &TrayControls) {
+    match command {
+        Command::ToggleActive => {
+            let new_state = !ACTIVE.load(Ordering::SeqCst);
+            ACTIVE.store(new_state, Ordering::SeqCst);
+            controls.item_active.set_checked(new_state);
+            if new_state {
+                cursor::hide_system_cursors();
+            } else {
+                cursor::restore_system_cursors();
+            }
+        }
+        Command::TogglePresentation => {
+            let new_state = !PRESENTATION_MODE.load(Ordering::SeqCst);
+            PRESENTATION_MODE.store(new_state, Ordering::SeqCst);
+            controls.item_pres.set_checked(new_state);
+        }
+        Command::ToggleMute => {
+            let new_state = !MUTED.load(Ordering::SeqCst);
+            MUTED.store(new_state, Ordering::SeqCst);
+            controls.item_mute.set_checked(new_state);
+        }
+        Command::ScaleUp => adjust_scale_by_step(10, controls),
+        Command::ScaleDown => adjust_scale_by_step(-10, controls),
+        Command::SetScalePreset(pct) => {
+            USER_SCALE_PCT.store(pct, Ordering::SeqCst);
+            controls.sync_size_checks(pct);
+        }
+        Command::Quit => {
+            RUNNING.store(false, Ordering::SeqCst);
+            unsafe {
+                PostQuitMessage(0);
+            }
+        }
+    }
+}
+
 fn main() {
     let _instance_mutex = unsafe {
         let mutex = CreateMutexW(None, true, w!("Local\\TapTap_SingleInstance_Mutex"))
@@ -436,60 +518,14 @@ fn main() {
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
             if msg.message == WM_HOTKEY {
-                match msg.wParam.0 as i32 {
-                    HOTKEY_TOGGLE_ACTIVE => {
-                        let new_state = !ACTIVE.load(Ordering::SeqCst);
-                        ACTIVE.store(new_state, Ordering::SeqCst);
-                        controls.item_active.set_checked(new_state);
-                        if new_state {
-                            cursor::hide_system_cursors();
-                        } else {
-                            cursor::restore_system_cursors();
-                        }
-                    }
-                    HOTKEY_TOGGLE_PRESENTATION => {
-                        let new_state = !PRESENTATION_MODE.load(Ordering::SeqCst);
-                        PRESENTATION_MODE.store(new_state, Ordering::SeqCst);
-                        controls.item_pres.set_checked(new_state);
-                    }
-                    HOTKEY_SIZE_UP => adjust_scale_by_step(10, &controls),
-                    HOTKEY_SIZE_DOWN => adjust_scale_by_step(-10, &controls),
-                    HOTKEY_QUIT => {
-                        RUNNING.store(false, Ordering::SeqCst);
-                        PostQuitMessage(0);
-                    }
-                    _ => {}
+                if let Some(command) = command_from_hotkey(msg.wParam) {
+                    apply_command(command, &controls);
                 }
             }
 
             while let Ok(event) = MenuEvent::receiver().try_recv() {
-                if event.id == controls.item_active.id() {
-                    let checked = controls.item_active.is_checked();
-                    ACTIVE.store(checked, Ordering::SeqCst);
-                    if checked {
-                        cursor::hide_system_cursors();
-                    } else {
-                        cursor::restore_system_cursors();
-                    }
-                } else if event.id == controls.item_pres.id() {
-                    PRESENTATION_MODE.store(controls.item_pres.is_checked(), Ordering::SeqCst);
-                } else if event.id == controls.item_mute.id() {
-                    MUTED.store(controls.item_mute.is_checked(), Ordering::SeqCst);
-                } else if event.id == controls.item_size_up.id() {
-                    adjust_scale_by_step(10, &controls);
-                } else if event.id == controls.item_size_down.id() {
-                    adjust_scale_by_step(-10, &controls);
-                } else if event.id == controls.item_quit.id() {
-                    RUNNING.store(false, Ordering::SeqCst);
-                    PostQuitMessage(0);
-                } else {
-                    for (pct, item) in &controls.size_items {
-                        if event.id == item.id() {
-                            USER_SCALE_PCT.store(*pct, Ordering::SeqCst);
-                            controls.sync_size_checks(*pct);
-                            break;
-                        }
-                    }
+                if let Some(command) = command_from_menu(&event, &controls) {
+                    apply_command(command, &controls);
                 }
             }
 

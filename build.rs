@@ -3,42 +3,13 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 
-const ICON_SVG: &str = r##"
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- Rounded Warm Orange Background Badge -->
-  <circle cx="128" cy="128" r="120" fill="#FF6B00" stroke="#1E1E1E" stroke-width="10" />
-
-  <!-- Centered & Tilted Cartoon Glove -->
-  <g transform="translate(128, 134) rotate(-22) scale(0.68) translate(-115, -110)">
-    <path d="M 76 108
-             L 76 34 C 76 14, 104 14, 104 34 L 104 88
-             C 106 72, 128 72, 130 88
-             C 134 76, 154 78, 154 94
-             C 158 84, 176 90, 174 108
-             C 174 136, 160 156, 146 164
-             L 86 164
-             C 72 154, 62 140, 46 124
-             C 30 108, 48 86, 66 102 Z"
-          fill="#FFFFFF" stroke="#000000" stroke-width="8.5" stroke-linejoin="round" stroke-linecap="round" />
-
-    <path d="M 122 130 C 120 142, 118 150, 118 156"
-          fill="none" stroke="#000000" stroke-width="6.5" stroke-linecap="round" />
-    <path d="M 142 134 C 138 145, 132 152, 127 157"
-          fill="none" stroke="#000000" stroke-width="6.5" stroke-linecap="round" />
-
-    <rect x="76" y="158" width="80" height="30" rx="10"
-          fill="#FFFFFF" stroke="#000000" stroke-width="8.5" stroke-linejoin="round" />
-
-    <line x1="94" y1="166" x2="94" y2="180" stroke="#000000" stroke-width="6" stroke-linecap="round" />
-    <line x1="109" y1="166" x2="109" y2="180" stroke="#000000" stroke-width="6" stroke-linecap="round" />
-    <line x1="124" y1="166" x2="124" y2="180" stroke="#000000" stroke-width="6" stroke-linecap="round" />
-    <line x1="139" y1="166" x2="139" y2="180" stroke="#000000" stroke-width="6" stroke-linecap="round" />
-  </g>
-</svg>
-"##;
+#[allow(dead_code)]
+#[path = "src/hand_art.rs"]
+mod hand_art;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/hand_art.rs");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -49,7 +20,18 @@ fn main() {
 
     // 1. Render the 256x256 icon SVG into a PNG byte buffer using resvg + tiny-skia
     let opt = resvg::usvg::Options::default();
-    let tree = resvg::usvg::Tree::from_str(ICON_SVG, &opt).expect("Valid icon SVG");
+    let icon_svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <circle cx="128" cy="128" r="120" fill="#FF6B00" stroke="#1E1E1E" stroke-width="10" />
+  <g transform="translate(128, 134) rotate(-22) scale(0.68) translate(-115, -110)">
+    {}
+  </g>
+</svg>
+"##,
+        hand_art::glove_markup(8.5, 6.5, 6.0)
+    );
+    let tree = resvg::usvg::Tree::from_str(&icon_svg, &opt).expect("Valid icon SVG");
     let mut pixmap = tiny_skia::Pixmap::new(256, 256).expect("Failed to allocate icon pixmap");
     resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
 
