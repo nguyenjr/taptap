@@ -1,16 +1,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app;
 mod audio;
 mod cursor;
 mod hand_art;
 mod physics_render;
+mod platform;
+mod spring;
 
+use app::App;
 use audio::AudioEngine;
-use crossbeam_channel::{unbounded, Sender};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
+use platform::{Effect, Event, Hotkey, MenuAction, Platform};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::OnceLock;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tray_icon::{Icon, TrayIconBuilder};
 use windows::core::{w, PCWSTR};
@@ -21,7 +28,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromPoint,
     ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
-    BLENDFUNCTION, DIB_RGB_COLORS, MONITOR_DEFAULTTONEAREST,
+    BLENDFUNCTION, DIB_RGB_COLORS, HDC, HBITMAP, HGDIOBJ, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -49,17 +56,6 @@ enum InputEvent {
     LeftDown,
     LeftUp,
     RightEvent,
-}
-
-#[derive(Clone, Copy)]
-enum Command {
-    ToggleActive,
-    TogglePresentation,
-    ToggleMute,
-    ScaleUp,
-    ScaleDown,
-    SetScalePreset(u32),
-    Quit,
 }
 
 static EVENT_TX: OnceLock<Sender<InputEvent>> = OnceLock::new();
@@ -134,13 +130,35 @@ fn query_monitor_dpi_scale(x: i32, y: i32) -> f32 {
     }
 }
 
-fn spawn_render_thread(hwnd_raw: isize, rx: crossbeam_channel::Receiver<InputEvent>) {
+struct RenderResources {
+    screen_dc: HDC,
+    mem_dc: HDC,
+    hbitmap: HBITMAP,
+    old_obj: HGDIOBJ,
+}
+
+impl Drop for RenderResources {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SelectObject(self.mem_dc, self.old_obj);
+            let _ = DeleteObject(self.hbitmap);
+            let _ = DeleteDC(self.mem_dc);
+            let _ = ReleaseDC(None, self.screen_dc);
+        }
+    }
+}
+
+fn spawn_render_thread(
+    hwnd_raw: isize,
+    rx: Receiver<InputEvent>,
+    error_tx: Sender<String>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut _);
         let mut animator = PokeAnimator::new();
         let audio = AudioEngine::new();
 
-        unsafe {
+        let (resources, bits_ptr) = unsafe {
             let screen_dc = GetDC(None);
             let mem_dc = CreateCompatibleDC(screen_dc);
 
@@ -158,17 +176,46 @@ fn spawn_render_thread(hwnd_raw: isize, rx: crossbeam_channel::Receiver<InputEve
             };
 
             let mut bits_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hbitmap = CreateDIBSection(
+            match CreateDIBSection(
                 mem_dc,
                 &bmi,
                 DIB_RGB_COLORS,
                 &mut bits_ptr,
                 HANDLE::default(),
                 0,
-            )
-            .expect("Failed to allocate DIBSection");
-            let old_obj = SelectObject(mem_dc, hbitmap);
+            ) {
+                Ok(hbitmap) => {
+                    let old_obj = SelectObject(mem_dc, hbitmap);
+                    (
+                        Ok(RenderResources {
+                            screen_dc,
+                            mem_dc,
+                            hbitmap,
+                            old_obj,
+                        }),
+                        bits_ptr,
+                    )
+                }
+                Err(error) => {
+                    let _ = DeleteDC(mem_dc);
+                    let _ = ReleaseDC(None, screen_dc);
+                    (Err(error), bits_ptr)
+                }
+            }
+        };
 
+        let (resources, bits_ptr) = match resources {
+            Ok(resources) => (resources, bits_ptr),
+            Err(error) => {
+                let _ = error_tx.send(format!("Failed to allocate DIBSection: {error:?}"));
+                unsafe {
+                    let _ = PostMessageW(hwnd, WM_APP, WPARAM(0), LPARAM(0));
+                }
+                return;
+            }
+        };
+
+        unsafe {
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as u8,
                 BlendFlags: 0,
@@ -259,10 +306,10 @@ fn spawn_render_thread(hwnd_raw: isize, rx: crossbeam_channel::Receiver<InputEve
 
                 let _ = UpdateLayeredWindow(
                     hwnd,
-                    screen_dc,
+                    resources.screen_dc,
                     Some(&dst_pt),
                     Some(&wnd_size),
-                    mem_dc,
+                    resources.mem_dc,
                     Some(&src_pt),
                     COLORREF(0),
                     Some(&blend),
@@ -271,13 +318,9 @@ fn spawn_render_thread(hwnd_raw: isize, rx: crossbeam_channel::Receiver<InputEve
 
                 std::thread::sleep(Duration::from_millis(8));
             }
-
-            SelectObject(mem_dc, old_obj);
-            let _ = DeleteObject(hbitmap);
-            let _ = DeleteDC(mem_dc);
-            ReleaseDC(None, screen_dc);
         }
-    });
+        drop(resources);
+    })
 }
 
 struct TrayControls {
@@ -364,79 +407,215 @@ fn create_tray_icon() -> TrayControls {
     }
 }
 
-fn adjust_scale_by_step(delta: i32, controls: &TrayControls) {
-    let current = USER_SCALE_PCT.load(Ordering::SeqCst) as i32;
-    let next = (current + delta).clamp(50, 200) as u32;
-    USER_SCALE_PCT.store(next, Ordering::SeqCst);
-    controls.sync_size_checks(next);
-}
-
-fn command_from_hotkey(wparam: WPARAM) -> Option<Command> {
+fn hotkey_from_wparam(wparam: WPARAM) -> Option<Hotkey> {
     match wparam.0 as i32 {
-        HOTKEY_TOGGLE_ACTIVE => Some(Command::ToggleActive),
-        HOTKEY_TOGGLE_PRESENTATION => Some(Command::TogglePresentation),
-        HOTKEY_SIZE_UP => Some(Command::ScaleUp),
-        HOTKEY_SIZE_DOWN => Some(Command::ScaleDown),
-        HOTKEY_QUIT => Some(Command::Quit),
+        HOTKEY_TOGGLE_ACTIVE => Some(Hotkey::ToggleActive),
+        HOTKEY_TOGGLE_PRESENTATION => Some(Hotkey::TogglePresentation),
+        HOTKEY_SIZE_UP => Some(Hotkey::ScaleUp),
+        HOTKEY_SIZE_DOWN => Some(Hotkey::ScaleDown),
+        HOTKEY_QUIT => Some(Hotkey::Quit),
         _ => None,
     }
 }
 
-fn command_from_menu(event: &MenuEvent, controls: &TrayControls) -> Option<Command> {
+fn menu_action(event: &MenuEvent, controls: &TrayControls) -> Option<MenuAction> {
     if event.id == controls.item_active.id() {
-        Some(Command::ToggleActive)
+        Some(MenuAction::ToggleActive)
     } else if event.id == controls.item_pres.id() {
-        Some(Command::TogglePresentation)
+        Some(MenuAction::TogglePresentation)
     } else if event.id == controls.item_mute.id() {
-        Some(Command::ToggleMute)
+        Some(MenuAction::ToggleMute)
     } else if event.id == controls.item_size_up.id() {
-        Some(Command::ScaleUp)
+        Some(MenuAction::ScaleUp)
     } else if event.id == controls.item_size_down.id() {
-        Some(Command::ScaleDown)
+        Some(MenuAction::ScaleDown)
     } else if event.id == controls.item_quit.id() {
-        Some(Command::Quit)
+        Some(MenuAction::Quit)
     } else {
         controls
             .size_items
             .iter()
             .find(|(_, item)| event.id == item.id())
-            .map(|(pct, _)| Command::SetScalePreset(*pct))
+            .map(|(pct, _)| MenuAction::SetScale(*pct))
     }
 }
 
-fn apply_command(command: Command, controls: &TrayControls) {
-    match command {
-        Command::ToggleActive => {
-            let new_state = !ACTIVE.load(Ordering::SeqCst);
-            ACTIVE.store(new_state, Ordering::SeqCst);
-            controls.item_active.set_checked(new_state);
-            if new_state {
-                cursor::hide_system_cursors();
-            } else {
-                cursor::restore_system_cursors();
+fn register_hotkeys() -> Vec<String> {
+    let mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+    let bindings: [(&str, i32, u32); 5] = [
+        ("Active (Ctrl+Shift+P)", HOTKEY_TOGGLE_ACTIVE, 0x50),
+        (
+            "Presentation Mode (Ctrl+Shift+M)",
+            HOTKEY_TOGGLE_PRESENTATION,
+            0x4D,
+        ),
+        ("Quit (Ctrl+Shift+Q)", HOTKEY_QUIT, 0x51),
+        (
+            "Increase Size (Ctrl+Shift+=)",
+            HOTKEY_SIZE_UP,
+            VK_OEM_PLUS.0 as u32,
+        ),
+        (
+            "Decrease Size (Ctrl+Shift+-)",
+            HOTKEY_SIZE_DOWN,
+            VK_OEM_MINUS.0 as u32,
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    unsafe {
+        for (label, id, vk) in bindings {
+            if RegisterHotKey(None, id, mods, vk).is_err() {
+                failures.push(format!("Failed to register hotkey: {label}"));
             }
         }
-        Command::TogglePresentation => {
-            let new_state = !PRESENTATION_MODE.load(Ordering::SeqCst);
-            PRESENTATION_MODE.store(new_state, Ordering::SeqCst);
-            controls.item_pres.set_checked(new_state);
+    }
+    failures
+}
+
+struct HookGuard(HHOOK);
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = UnhookWindowsHookEx(self.0);
         }
-        Command::ToggleMute => {
-            let new_state = !MUTED.load(Ordering::SeqCst);
-            MUTED.store(new_state, Ordering::SeqCst);
-            controls.item_mute.set_checked(new_state);
+    }
+}
+
+struct Win32Platform {
+    hwnd: HWND,
+    controls: TrayControls,
+    msg: MSG,
+    pending: VecDeque<Event>,
+    input_rx: Receiver<InputEvent>,
+    error_rx: Receiver<String>,
+    error_tx: Sender<String>,
+    hook: Option<HookGuard>,
+    render_thread: Option<JoinHandle<()>>,
+}
+
+impl Win32Platform {
+    fn new(
+        hwnd: HWND,
+        controls: TrayControls,
+        input_rx: Receiver<InputEvent>,
+        error_rx: Receiver<String>,
+        error_tx: Sender<String>,
+    ) -> Self {
+        Self {
+            hwnd,
+            controls,
+            msg: MSG::default(),
+            pending: VecDeque::new(),
+            input_rx,
+            error_rx,
+            error_tx,
+            hook: None,
+            render_thread: None,
         }
-        Command::ScaleUp => adjust_scale_by_step(10, controls),
-        Command::ScaleDown => adjust_scale_by_step(-10, controls),
-        Command::SetScalePreset(pct) => {
-            USER_SCALE_PCT.store(pct, Ordering::SeqCst);
-            controls.sync_size_checks(pct);
+    }
+
+    fn collect_pending(&mut self) {
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if let Some(action) = menu_action(&event, &self.controls) {
+                self.pending.push_back(Event::Menu(action));
+            }
         }
-        Command::Quit => {
-            RUNNING.store(false, Ordering::SeqCst);
+        while let Ok(error) = self.error_rx.try_recv() {
+            self.pending.push_back(Event::RenderFailed(error));
+        }
+    }
+}
+
+impl Platform for Win32Platform {
+    fn next_event(&mut self) -> Option<Event> {
+        if let Some(event) = self.pending.pop_front() {
+            return Some(event);
+        }
+
+        loop {
+            let status = unsafe { GetMessageW(&mut self.msg, None, 0, 0) };
+            if status.0 == -1 {
+                return Some(Event::MessageLoopFailed);
+            }
+            if status.0 == 0 {
+                return None;
+            }
+
+            if self.msg.message == WM_HOTKEY {
+                if let Some(hotkey) = hotkey_from_wparam(self.msg.wParam) {
+                    self.collect_pending();
+                    return Some(Event::Hotkey(hotkey));
+                }
+            }
+
+            self.collect_pending();
+            if let Some(event) = self.pending.pop_front() {
+                return Some(event);
+            }
+
             unsafe {
-                PostQuitMessage(0);
+                let _ = TranslateMessage(&self.msg);
+                DispatchMessageW(&self.msg);
             }
+        }
+    }
+
+    fn emit(&mut self, effect: Effect) {
+        match effect {
+            Effect::InstallMouseHook => unsafe {
+                let instance = GetModuleHandleW(None).expect("Failed to get module handle");
+                match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0) {
+                    Ok(hook) => self.hook = Some(HookGuard(hook)),
+                    Err(error) => self
+                        .pending
+                        .push_back(Event::StartupFailed(format!("Failed to install mouse hook: {error:?}"))),
+                }
+            },
+            Effect::RemoveMouseHook => self.hook = None,
+            Effect::StartRenderThread => {
+                let handle = spawn_render_thread(
+                    self.hwnd.0 as isize,
+                    self.input_rx.clone(),
+                    self.error_tx.clone(),
+                );
+                self.render_thread = Some(handle);
+            }
+            Effect::StopRenderThread => {
+                RUNNING.store(false, Ordering::SeqCst);
+                if let Some(handle) = self.render_thread.take() {
+                    let _ = handle.join();
+                }
+            }
+            Effect::HideSystemCursors => cursor::hide_system_cursors(),
+            Effect::RestoreSystemCursors => cursor::restore_system_cursors(),
+            Effect::ActiveChanged(active) => {
+                ACTIVE.store(active, Ordering::SeqCst);
+                self.controls.item_active.set_checked(active);
+            }
+            Effect::PresentationChanged(active) => {
+                PRESENTATION_MODE.store(active, Ordering::SeqCst);
+                self.controls.item_pres.set_checked(active);
+            }
+            Effect::MuteChanged(muted) => {
+                MUTED.store(muted, Ordering::SeqCst);
+                self.controls.item_mute.set_checked(muted);
+            }
+            Effect::ScaleChanged(pct) => {
+                USER_SCALE_PCT.store(pct, Ordering::SeqCst);
+                self.controls.sync_size_checks(pct);
+            }
+            Effect::ShowOverlay => unsafe {
+                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            },
+            Effect::HideOverlay => unsafe {
+                let _ = ShowWindow(self.hwnd, SW_HIDE);
+            },
+            Effect::PostQuit => unsafe {
+                PostQuitMessage(0);
+            },
+            Effect::ReportError(message) => eprintln!("TapTap: {message}"),
         }
     }
 }
@@ -463,10 +642,13 @@ fn main() {
             MOUSE_X.store(init_pt.x, Ordering::Relaxed);
             MOUSE_Y.store(init_pt.y, Ordering::Relaxed);
         }
+    }
 
-        let (tx, rx) = unbounded();
-        let _ = EVENT_TX.set(tx);
+    let (input_tx, input_rx) = unbounded();
+    let _ = EVENT_TX.set(input_tx);
+    let (error_tx, error_rx) = unbounded::<String>();
 
+    unsafe {
         let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
         let class_name: PCWSTR = w!("TapTapOverlayWindowClass");
 
@@ -501,40 +683,14 @@ fn main() {
         )
         .expect("Failed to create overlay window");
 
-        let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0)
-            .expect("Failed to install WH_MOUSE_LL hook");
-
-        let mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
-        let _ = RegisterHotKey(None, HOTKEY_TOGGLE_ACTIVE, mods, 0x50); // Ctrl+Shift+P
-        let _ = RegisterHotKey(None, HOTKEY_TOGGLE_PRESENTATION, mods, 0x4D); // Ctrl+Shift+M
-        let _ = RegisterHotKey(None, HOTKEY_QUIT, mods, 0x51); // Ctrl+Shift+Q
-        let _ = RegisterHotKey(None, HOTKEY_SIZE_UP, mods, VK_OEM_PLUS.0 as u32); // Ctrl+Shift+=
-        let _ = RegisterHotKey(None, HOTKEY_SIZE_DOWN, mods, VK_OEM_MINUS.0 as u32); // Ctrl+Shift+-
-
         let controls = create_tray_icon();
-        cursor::hide_system_cursors();
-        spawn_render_thread(hwnd.0 as isize, rx);
+        let mut platform = Win32Platform::new(hwnd, controls, input_rx, error_rx, error_tx);
+        let mut app = App::new();
 
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).into() {
-            if msg.message == WM_HOTKEY {
-                if let Some(command) = command_from_hotkey(msg.wParam) {
-                    apply_command(command, &controls);
-                }
-            }
-
-            while let Ok(event) = MenuEvent::receiver().try_recv() {
-                if let Some(command) = command_from_menu(&event, &controls) {
-                    apply_command(command, &controls);
-                }
-            }
-
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        app.handle(Event::Start, &mut platform);
+        for failure in register_hotkeys() {
+            app.handle(Event::StartupFailed(failure), &mut platform);
         }
-
-        RUNNING.store(false, Ordering::SeqCst);
-        let _ = UnhookWindowsHookEx(hook);
-        cursor::restore_system_cursors();
+        app.run(&mut platform);
     }
 }

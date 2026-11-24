@@ -1,4 +1,5 @@
 use crate::hand_art;
+use crate::spring::Spring;
 use rand::Rng;
 use resvg::usvg::{Options, Tree};
 use tiny_skia::{
@@ -53,26 +54,6 @@ fn round_stroke(width: f32) -> Stroke {
     }
 }
 
-pub struct Spring {
-    pub val: f32,
-    pub vel: f32,
-    pub target: f32,
-    pub stiffness: f32,
-    pub damping: f32,
-}
-
-impl Spring {
-    pub fn new(val: f32, stiffness: f32, damping: f32) -> Self {
-        Self { val, vel: 0.0, target: val, stiffness, damping }
-    }
-
-    pub fn update(&mut self, dt: f32) {
-        let force = (self.target - self.val) * self.stiffness;
-        self.vel = (self.vel + force * dt) * (-self.damping * dt).exp();
-        self.val += self.vel * dt;
-    }
-}
-
 struct CartoonRay {
     angle: f32,
     angular_vel: f32,
@@ -93,9 +74,9 @@ struct ImpactBurst {
 pub struct PokeAnimator {
     hand_pixmap: Pixmap,
     canvas: Pixmap,
-    pub poke_spring: Spring,
-    pub tilt_spring: Spring,
-    pub scale_spring: Spring,
+    poke_spring: Spring,
+    tilt_spring: Spring,
+    scale_spring: Spring,
     pub combo_heat: f32,
     bursts: Vec<ImpactBurst>,
 }
@@ -124,16 +105,14 @@ impl PokeAnimator {
             self.combo_heat = (self.combo_heat + 1.2).min(12.0);
             let intensity = 1.0 + self.combo_heat * 0.18;
 
-            self.poke_spring.val = -12.0 * intensity.min(2.2);
-            self.poke_spring.vel = 620.0 * intensity;
-
-            self.tilt_spring.val = 10.0 * intensity.min(2.0);
-            self.tilt_spring.vel = -360.0 * intensity;
-
-            self.scale_spring.vel += 2.2;
+            self.poke_spring
+                .set(-12.0 * intensity.min(2.2), 620.0 * intensity);
+            self.tilt_spring
+                .set(10.0 * intensity.min(2.0), -360.0 * intensity);
+            self.scale_spring.add_velocity(2.2);
             self.spawn_impact_burst();
         } else {
-            self.poke_spring.vel -= 140.0;
+            self.poke_spring.add_velocity(-140.0);
         }
     }
 
@@ -191,7 +170,7 @@ impl PokeAnimator {
         }
 
         let raw_target = (BASE_HAND_SCALE + self.combo_heat * 0.045) * user_scale;
-        self.scale_spring.target = raw_target.min(1.15);
+        self.scale_spring.set_target(raw_target.min(1.15));
 
         self.poke_spring.update(dt);
         self.tilt_spring.update(dt);
@@ -345,9 +324,9 @@ impl PokeAnimator {
         let effect_scale = (dpi_scale * user_scale.sqrt()).clamp(0.6, 2.5);
         self.draw_impact_bursts(effect_scale);
 
-        let total_scale = (self.scale_spring.val * dpi_scale).clamp(0.20, 1.45);
-        let poke_dist = self.poke_spring.val * effect_scale;
-        let angle_deg = BASE_ANGLE_DEG + self.tilt_spring.val.clamp(-35.0, 35.0);
+        let total_scale = (self.scale_spring.value() * dpi_scale).clamp(0.20, 1.45);
+        let poke_dist = self.poke_spring.value() * effect_scale;
+        let angle_deg = BASE_ANGLE_DEG + self.tilt_spring.value().clamp(-35.0, 35.0);
 
         let rad = BASE_ANGLE_DEG.to_radians();
         let dir_x = rad.sin();
