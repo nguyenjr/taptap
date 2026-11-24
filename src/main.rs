@@ -87,11 +87,58 @@ impl RuntimeState {
     }
 }
 
-const HOTKEY_TOGGLE_ACTIVE: i32 = 1;
-const HOTKEY_TOGGLE_PRESENTATION: i32 = 2;
-const HOTKEY_QUIT: i32 = 3;
-const HOTKEY_SIZE_UP: i32 = 4;
-const HOTKEY_SIZE_DOWN: i32 = 5;
+struct HotkeyBinding {
+    hotkey: Hotkey,
+    id: i32,
+    vk: u32,
+    label: &'static str,
+    menu_label: &'static str,
+}
+
+const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
+    HotkeyBinding {
+        hotkey: Hotkey::ToggleActive,
+        id: 1,
+        vk: 0x50,
+        label: "Active (Ctrl+Shift+P)",
+        menu_label: "Active (Ctrl+Shift+P)",
+    },
+    HotkeyBinding {
+        hotkey: Hotkey::TogglePresentation,
+        id: 2,
+        vk: 0x4D,
+        label: "Presentation Mode (Ctrl+Shift+M)",
+        menu_label: "Presentation Mode (Ctrl+Shift+M)",
+    },
+    HotkeyBinding {
+        hotkey: Hotkey::Quit,
+        id: 3,
+        vk: 0x51,
+        label: "Quit (Ctrl+Shift+Q)",
+        menu_label: "Quit (Ctrl+Shift+Q)",
+    },
+    HotkeyBinding {
+        hotkey: Hotkey::ScaleUp,
+        id: 4,
+        vk: VK_OEM_PLUS.0 as u32,
+        label: "Increase Size (Ctrl+Shift+=)",
+        menu_label: "Increase Size (+10%) [Ctrl+Shift+=]",
+    },
+    HotkeyBinding {
+        hotkey: Hotkey::ScaleDown,
+        id: 5,
+        vk: VK_OEM_MINUS.0 as u32,
+        label: "Decrease Size (Ctrl+Shift+-)",
+        menu_label: "Decrease Size (-10%) [Ctrl+Shift+-]",
+    },
+];
+
+fn hotkey_binding(hotkey: Hotkey) -> &'static HotkeyBinding {
+    HOTKEY_BINDINGS
+        .iter()
+        .find(|binding| binding.hotkey == hotkey)
+        .expect("every hotkey has a binding")
+}
 
 const SIZE_PRESETS: [(u32, &str); 4] = [
     (75, "Small (75%)"),
@@ -379,8 +426,18 @@ impl TrayControls {
 
 fn create_tray_icon() -> TrayControls {
     let menu = Menu::new();
-    let item_active = CheckMenuItem::new("Active (Ctrl+Shift+P)", true, true, None);
-    let item_pres = CheckMenuItem::new("Presentation Mode (Ctrl+Shift+M)", true, false, None);
+    let item_active = CheckMenuItem::new(
+        hotkey_binding(Hotkey::ToggleActive).menu_label,
+        true,
+        true,
+        None,
+    );
+    let item_pres = CheckMenuItem::new(
+        hotkey_binding(Hotkey::TogglePresentation).menu_label,
+        true,
+        false,
+        None,
+    );
     let item_mute = CheckMenuItem::new("Mute Audio", true, false, None);
 
     let size_submenu = Submenu::new("Hand Size", true);
@@ -392,12 +449,12 @@ fn create_tray_icon() -> TrayControls {
         size_items.push((pct, check_item));
     }
     let _ = size_submenu.append(&PredefinedMenuItem::separator());
-    let item_size_up = MenuItem::new("Increase Size (+10%) [Ctrl+Shift+=]", true, None);
-    let item_size_down = MenuItem::new("Decrease Size (-10%) [Ctrl+Shift+-]", true, None);
+    let item_size_up = MenuItem::new(hotkey_binding(Hotkey::ScaleUp).menu_label, true, None);
+    let item_size_down = MenuItem::new(hotkey_binding(Hotkey::ScaleDown).menu_label, true, None);
     let _ = size_submenu.append(&item_size_up);
     let _ = size_submenu.append(&item_size_down);
 
-    let item_quit = MenuItem::new("Quit (Ctrl+Shift+Q)", true, None);
+    let item_quit = MenuItem::new(hotkey_binding(Hotkey::Quit).menu_label, true, None);
 
     let _ = menu.append(&item_active);
     let _ = menu.append(&item_pres);
@@ -443,14 +500,10 @@ fn create_tray_icon() -> TrayControls {
 }
 
 fn hotkey_from_wparam(wparam: WPARAM) -> Option<Hotkey> {
-    match wparam.0 as i32 {
-        HOTKEY_TOGGLE_ACTIVE => Some(Hotkey::ToggleActive),
-        HOTKEY_TOGGLE_PRESENTATION => Some(Hotkey::TogglePresentation),
-        HOTKEY_SIZE_UP => Some(Hotkey::ScaleUp),
-        HOTKEY_SIZE_DOWN => Some(Hotkey::ScaleDown),
-        HOTKEY_QUIT => Some(Hotkey::Quit),
-        _ => None,
-    }
+    HOTKEY_BINDINGS
+        .iter()
+        .find(|binding| binding.id == wparam.0 as i32)
+        .map(|binding| binding.hotkey)
 }
 
 fn menu_action(event: &MenuEvent, controls: &TrayControls) -> Option<MenuAction> {
@@ -477,31 +530,11 @@ fn menu_action(event: &MenuEvent, controls: &TrayControls) -> Option<MenuAction>
 
 fn register_hotkeys() -> Vec<String> {
     let mods = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
-    let bindings: [(&str, i32, u32); 5] = [
-        ("Active (Ctrl+Shift+P)", HOTKEY_TOGGLE_ACTIVE, 0x50),
-        (
-            "Presentation Mode (Ctrl+Shift+M)",
-            HOTKEY_TOGGLE_PRESENTATION,
-            0x4D,
-        ),
-        ("Quit (Ctrl+Shift+Q)", HOTKEY_QUIT, 0x51),
-        (
-            "Increase Size (Ctrl+Shift+=)",
-            HOTKEY_SIZE_UP,
-            VK_OEM_PLUS.0 as u32,
-        ),
-        (
-            "Decrease Size (Ctrl+Shift+-)",
-            HOTKEY_SIZE_DOWN,
-            VK_OEM_MINUS.0 as u32,
-        ),
-    ];
-
     let mut failures = Vec::new();
     unsafe {
-        for (label, id, vk) in bindings {
-            if RegisterHotKey(None, id, mods, vk).is_err() {
-                failures.push(format!("Failed to register hotkey: {label}"));
+        for binding in HOTKEY_BINDINGS {
+            if RegisterHotKey(None, binding.id, mods, binding.vk).is_err() {
+                failures.push(format!("Failed to register hotkey: {}", binding.label));
             }
         }
     }
@@ -606,6 +639,11 @@ impl Platform for Win32Platform {
 
     fn emit(&mut self, effect: Effect) {
         match effect {
+            Effect::RegisterHotkeys => {
+                for failure in register_hotkeys() {
+                    self.pending.push_back(Event::StartupFailed(failure));
+                }
+            }
             Effect::InstallMouseHook => unsafe {
                 let instance = GetModuleHandleW(None).expect("Failed to get module handle");
                 match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0) {
@@ -730,9 +768,6 @@ fn main() {
         let mut app = App::new();
 
         app.handle(Event::Start, &mut platform);
-        for failure in register_hotkeys() {
-            app.handle(Event::StartupFailed(failure), &mut platform);
-        }
         app.run(&mut platform);
     }
 }
