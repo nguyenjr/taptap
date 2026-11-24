@@ -13,10 +13,10 @@ use audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
-use platform::{Effect, Event, Hotkey, MenuAction, Platform};
+use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tray_icon::{Icon, TrayIconBuilder};
@@ -41,16 +41,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-static ACTIVE: AtomicBool = AtomicBool::new(true);
-static PRESENTATION_MODE: AtomicBool = AtomicBool::new(false);
-static MUTED: AtomicBool = AtomicBool::new(false);
-static RUNNING: AtomicBool = AtomicBool::new(true);
-
-static USER_SCALE_PCT: AtomicU32 = AtomicU32::new(100);
-
-static MOUSE_X: AtomicI32 = AtomicI32::new(500);
-static MOUSE_Y: AtomicI32 = AtomicI32::new(500);
-
 #[derive(Clone, Copy)]
 enum InputEvent {
     LeftDown,
@@ -58,7 +48,44 @@ enum InputEvent {
     RightEvent,
 }
 
-static EVENT_TX: OnceLock<Sender<InputEvent>> = OnceLock::new();
+struct RuntimeState {
+    active: AtomicBool,
+    presentation: AtomicBool,
+    muted: AtomicBool,
+    running: AtomicBool,
+    scale_pct: AtomicU32,
+    mouse_x: AtomicI32,
+    mouse_y: AtomicI32,
+    suppress_click: AtomicBool,
+    input_tx: Sender<InputEvent>,
+    event_tx: Sender<Event>,
+    hwnd_raw: isize,
+}
+
+static HOOK_STATE: OnceLock<Arc<RuntimeState>> = OnceLock::new();
+
+impl RuntimeState {
+    fn new(
+        input_tx: Sender<InputEvent>,
+        event_tx: Sender<Event>,
+        hwnd: HWND,
+        initial_cursor: POINT,
+    ) -> Self {
+        Self {
+            active: AtomicBool::new(true),
+            presentation: AtomicBool::new(false),
+            muted: AtomicBool::new(false),
+            running: AtomicBool::new(true),
+            scale_pct: AtomicU32::new(100),
+            mouse_x: AtomicI32::new(initial_cursor.x),
+            mouse_y: AtomicI32::new(initial_cursor.y),
+            suppress_click: AtomicBool::new(false),
+            input_tx,
+            event_tx,
+            hwnd_raw: hwnd.0 as isize,
+        }
+    }
+}
 
 const HOTKEY_TOGGLE_ACTIVE: i32 = 1;
 const HOTKEY_TOGGLE_PRESENTATION: i32 = 2;
@@ -84,33 +111,40 @@ unsafe extern "system" fn wnd_proc(
 
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
+        let Some(state) = HOOK_STATE.get() else {
+            return CallNextHookEx(None, code, wparam, lparam);
+        };
         let hook_struct = *(lparam.0 as *const MSLLHOOKSTRUCT);
-        MOUSE_X.store(hook_struct.pt.x, Ordering::Relaxed);
-        MOUSE_Y.store(hook_struct.pt.y, Ordering::Relaxed);
+        state.mouse_x.store(hook_struct.pt.x, Ordering::Relaxed);
+        state.mouse_y.store(hook_struct.pt.y, Ordering::Relaxed);
 
         let msg = wparam.0 as u32;
-        if ACTIVE.load(Ordering::Relaxed) {
-            if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK {
-                if let Some(tx) = EVENT_TX.get() {
-                    let _ = tx.try_send(InputEvent::LeftDown);
-                }
-                if PRESENTATION_MODE.load(Ordering::Relaxed) {
-                    return LRESULT(1);
-                }
-            } else if msg == WM_LBUTTONUP {
-                if let Some(tx) = EVENT_TX.get() {
-                    let _ = tx.try_send(InputEvent::LeftUp);
-                }
-                if PRESENTATION_MODE.load(Ordering::Relaxed) {
-                    return LRESULT(1);
-                }
-            } else if msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP || msg == WM_RBUTTONDBLCLK {
-                if let Some(tx) = EVENT_TX.get() {
-                    let _ = tx.try_send(InputEvent::RightEvent);
-                }
-                if PRESENTATION_MODE.load(Ordering::Relaxed) {
-                    return LRESULT(1);
-                }
+        let button = if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK {
+            Some(MouseButtonEvent::LeftDown)
+        } else if msg == WM_LBUTTONUP {
+            Some(MouseButtonEvent::LeftUp)
+        } else if msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP || msg == WM_RBUTTONDBLCLK {
+            Some(MouseButtonEvent::Right)
+        } else {
+            None
+        };
+
+        if let Some(button) = button {
+            if state.active.load(Ordering::Relaxed) {
+                let animation = match button {
+                    MouseButtonEvent::LeftDown => InputEvent::LeftDown,
+                    MouseButtonEvent::LeftUp => InputEvent::LeftUp,
+                    MouseButtonEvent::Right => InputEvent::RightEvent,
+                };
+                let _ = state.input_tx.try_send(animation);
+            }
+
+            let _ = state.event_tx.try_send(Event::MouseButton(button));
+            unsafe {
+                let _ = PostMessageW(HWND(state.hwnd_raw as *mut _), WM_APP, WPARAM(0), LPARAM(0));
+            }
+            if state.suppress_click.load(Ordering::Relaxed) {
+                return LRESULT(1);
             }
         }
     }
@@ -152,6 +186,7 @@ fn spawn_render_thread(
     hwnd_raw: isize,
     rx: Receiver<InputEvent>,
     error_tx: Sender<String>,
+    state: Arc<RuntimeState>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut _);
@@ -227,7 +262,7 @@ fn spawn_render_thread(
             let mut was_visible = true;
             let mut frame_count: u32 = 0;
 
-            while RUNNING.load(Ordering::Relaxed) {
+            while state.running.load(Ordering::Relaxed) {
                 let now = Instant::now();
                 let dt = (now - last_tick).as_secs_f32().min(0.05);
                 last_tick = now;
@@ -238,7 +273,7 @@ fn spawn_render_thread(
                     match ev {
                         InputEvent::LeftDown => {
                             animator.trigger_click(true);
-                            if !MUTED.load(Ordering::Relaxed) {
+                            if !state.muted.load(Ordering::Relaxed) {
                                 audio.play_poke(animator.combo_heat);
                             }
                             force_topmost = true;
@@ -253,7 +288,7 @@ fn spawn_render_thread(
                     }
                 }
 
-                if !ACTIVE.load(Ordering::Relaxed) {
+                if !state.active.load(Ordering::Relaxed) {
                     if was_visible {
                         let _ = ShowWindow(hwnd, SW_HIDE);
                         was_visible = false;
@@ -279,11 +314,11 @@ fn spawn_render_thread(
                     );
                 }
 
-                let mx = MOUSE_X.load(Ordering::Relaxed);
-                let my = MOUSE_Y.load(Ordering::Relaxed);
+                let mx = state.mouse_x.load(Ordering::Relaxed);
+                let my = state.mouse_y.load(Ordering::Relaxed);
                 let dpi_scale = query_monitor_dpi_scale(mx, my);
-                let user_scale = USER_SCALE_PCT.load(Ordering::Relaxed) as f32 / 100.0;
-                let pres_mode = PRESENTATION_MODE.load(Ordering::Relaxed);
+                let user_scale = state.scale_pct.load(Ordering::Relaxed) as f32 / 100.0;
+                let pres_mode = state.presentation.load(Ordering::Relaxed);
 
                 animator.step(dt, user_scale);
                 let pixels = animator.render_bgra(dpi_scale, user_scale, pres_mode);
@@ -488,7 +523,9 @@ struct Win32Platform {
     controls: TrayControls,
     msg: MSG,
     pending: VecDeque<Event>,
+    state: Arc<RuntimeState>,
     input_rx: Receiver<InputEvent>,
+    event_rx: Receiver<Event>,
     error_rx: Receiver<String>,
     error_tx: Sender<String>,
     hook: Option<HookGuard>,
@@ -496,19 +533,21 @@ struct Win32Platform {
 }
 
 impl Win32Platform {
-    fn new(
-        hwnd: HWND,
-        controls: TrayControls,
-        input_rx: Receiver<InputEvent>,
-        error_rx: Receiver<String>,
-        error_tx: Sender<String>,
-    ) -> Self {
+    fn new(hwnd: HWND, controls: TrayControls, initial_cursor: POINT) -> Self {
+        let (input_tx, input_rx) = unbounded();
+        let (event_tx, event_rx) = unbounded::<Event>();
+        let (error_tx, error_rx) = unbounded::<String>();
+        let state = Arc::new(RuntimeState::new(input_tx, event_tx, hwnd, initial_cursor));
+        let _ = HOOK_STATE.set(state.clone());
+
         Self {
             hwnd,
             controls,
             msg: MSG::default(),
             pending: VecDeque::new(),
+            state,
             input_rx,
+            event_rx,
             error_rx,
             error_tx,
             hook: None,
@@ -521,6 +560,9 @@ impl Win32Platform {
             if let Some(action) = menu_action(&event, &self.controls) {
                 self.pending.push_back(Event::Menu(action));
             }
+        }
+        while let Ok(event) = self.event_rx.try_recv() {
+            self.pending.push_back(event);
         }
         while let Ok(error) = self.error_rx.try_recv() {
             self.pending.push_back(Event::RenderFailed(error));
@@ -579,11 +621,12 @@ impl Platform for Win32Platform {
                     self.hwnd.0 as isize,
                     self.input_rx.clone(),
                     self.error_tx.clone(),
+                    self.state.clone(),
                 );
                 self.render_thread = Some(handle);
             }
             Effect::StopRenderThread => {
-                RUNNING.store(false, Ordering::SeqCst);
+                self.state.running.store(false, Ordering::SeqCst);
                 if let Some(handle) = self.render_thread.take() {
                     let _ = handle.join();
                 }
@@ -591,20 +634,23 @@ impl Platform for Win32Platform {
             Effect::HideSystemCursors => cursor::hide_system_cursors(),
             Effect::RestoreSystemCursors => cursor::restore_system_cursors(),
             Effect::ActiveChanged(active) => {
-                ACTIVE.store(active, Ordering::SeqCst);
+                self.state.active.store(active, Ordering::SeqCst);
                 self.controls.item_active.set_checked(active);
             }
             Effect::PresentationChanged(active) => {
-                PRESENTATION_MODE.store(active, Ordering::SeqCst);
+                self.state.presentation.store(active, Ordering::SeqCst);
                 self.controls.item_pres.set_checked(active);
             }
             Effect::MuteChanged(muted) => {
-                MUTED.store(muted, Ordering::SeqCst);
+                self.state.muted.store(muted, Ordering::SeqCst);
                 self.controls.item_mute.set_checked(muted);
             }
             Effect::ScaleChanged(pct) => {
-                USER_SCALE_PCT.store(pct, Ordering::SeqCst);
+                self.state.scale_pct.store(pct, Ordering::SeqCst);
                 self.controls.sync_size_checks(pct);
+            }
+            Effect::SuppressClick(suppress) => {
+                self.state.suppress_click.store(suppress, Ordering::SeqCst);
             }
             Effect::ShowOverlay => unsafe {
                 let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
@@ -634,19 +680,15 @@ fn main() {
 
     cursor::install_failsafes();
 
+    let mut init_pt = POINT { x: 500, y: 500 };
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-        let mut init_pt = POINT::default();
-        if GetCursorPos(&mut init_pt).is_ok() {
-            MOUSE_X.store(init_pt.x, Ordering::Relaxed);
-            MOUSE_Y.store(init_pt.y, Ordering::Relaxed);
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_ok() {
+            init_pt = cursor;
         }
     }
-
-    let (input_tx, input_rx) = unbounded();
-    let _ = EVENT_TX.set(input_tx);
-    let (error_tx, error_rx) = unbounded::<String>();
 
     unsafe {
         let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
@@ -684,7 +726,7 @@ fn main() {
         .expect("Failed to create overlay window");
 
         let controls = create_tray_icon();
-        let mut platform = Win32Platform::new(hwnd, controls, input_rx, error_rx, error_tx);
+        let mut platform = Win32Platform::new(hwnd, controls, init_pt);
         let mut app = App::new();
 
         app.handle(Event::Start, &mut platform);
