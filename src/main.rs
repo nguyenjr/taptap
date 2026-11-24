@@ -14,11 +14,13 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
 use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
+use resvg::usvg::{Options, Tree};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use tiny_skia::{Pixmap, Transform};
 use tray_icon::{Icon, TrayIconBuilder};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
@@ -464,21 +466,18 @@ fn create_tray_icon() -> TrayControls {
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&item_quit);
 
-    let mut icon_rgba = vec![0u8; 16 * 16 * 4];
-    for y in 0..16 {
-        for x in 0..16 {
-            let dx = x as f32 - 7.5;
-            let dy = y as f32 - 7.5;
-            if dx * dx + dy * dy <= 42.0 {
-                let idx = (y * 16 + x) * 4;
-                icon_rgba[idx] = 255;
-                icon_rgba[idx + 1] = 205;
-                icon_rgba[idx + 2] = 90;
-                icon_rgba[idx + 3] = 255;
-            }
-        }
-    }
-    let icon = Icon::from_rgba(icon_rgba, 16, 16).unwrap();
+    let icon_svg = format!(
+        r##"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 6 182 182" width="32" height="32">
+  {}
+</svg>
+"##,
+        hand_art::glove_markup(10.0, 7.0, 7.0)
+    );
+    let tree = Tree::from_str(&icon_svg, &Options::default()).expect("Valid tray icon SVG");
+    let mut pixmap = Pixmap::new(32, 32).expect("Failed to allocate tray icon pixmap");
+    resvg::render(&tree, Transform::default(), &mut pixmap.as_mut());
+    let icon = Icon::from_rgba(pixmap.data().to_vec(), 32, 32).expect("Failed to build tray icon");
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -625,14 +624,14 @@ impl Platform for Win32Platform {
                 }
             }
 
-            self.collect_pending();
-            if let Some(event) = self.pending.pop_front() {
-                return Some(event);
-            }
-
             unsafe {
                 let _ = TranslateMessage(&self.msg);
                 DispatchMessageW(&self.msg);
+            }
+
+            self.collect_pending();
+            if let Some(event) = self.pending.pop_front() {
+                return Some(event);
             }
         }
     }
@@ -769,5 +768,103 @@ fn main() {
 
         app.handle(Event::Start, &mut platform);
         app.run(&mut platform);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+    fn test_window() -> HWND {
+        unsafe {
+            let instance: HINSTANCE = GetModuleHandleW(None).unwrap().into();
+            let class_name = w!("TapTapMessageLoopTestClass");
+            let wc = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(wnd_proc),
+                hInstance: instance,
+                lpszClassName: class_name,
+                ..Default::default()
+            };
+            RegisterClassExW(&wc);
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                class_name,
+                w!("test"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                instance,
+                None,
+            )
+            .unwrap()
+        }
+    }
+
+    fn tray_window() -> HWND {
+        unsafe { FindWindowW(w!("tray_icon_app"), None).expect("tray window") }
+    }
+
+    fn drain_messages() {
+        loop {
+            let mut msg = MSG::default();
+            unsafe {
+                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).0 == 0 {
+                    return;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    fn quit_command_id(hwnd: HWND, controls: &TrayControls) -> u32 {
+        for id in 1000..1200u32 {
+            unsafe {
+                let _ = PostMessageW(hwnd, WM_COMMAND, WPARAM(id as usize), LPARAM(0));
+            }
+            drain_messages();
+            while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+                if event.id == *controls.item_quit.id() {
+                    return id;
+                }
+            }
+        }
+        panic!("quit menu command id not found");
+    }
+
+    #[test]
+    fn menu_quit_event_is_delivered_on_the_first_message() {
+        let hwnd = test_window();
+        let controls = create_tray_icon();
+        let tray_hwnd = tray_window();
+        let quit_id = quit_command_id(tray_hwnd, &controls);
+        let mut platform = Win32Platform::new(hwnd, controls, POINT { x: 500, y: 500 });
+
+        let thread_id = unsafe { GetCurrentThreadId() };
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            unsafe {
+                let _ = PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+            }
+        });
+
+        unsafe {
+            let _ = PostMessageW(tray_hwnd, WM_COMMAND, WPARAM(quit_id as usize), LPARAM(0));
+        }
+
+        let event = platform.next_event();
+        assert!(
+            matches!(event, Some(Event::Menu(MenuAction::Quit))),
+            "got {event:?}"
+        );
     }
 }
