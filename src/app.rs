@@ -72,6 +72,7 @@ impl App {
     pub fn handle(&mut self, event: Event, platform: &mut dyn Platform) {
         match event {
             Event::Start => {
+                platform.emit(Effect::RegisterHotkeys);
                 platform.emit(Effect::InstallMouseHook);
                 platform.emit(Effect::HideSystemCursors);
                 platform.emit(Effect::StartRenderThread);
@@ -194,6 +195,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![
+                Effect::RegisterHotkeys,
                 Effect::InstallMouseHook,
                 Effect::HideSystemCursors,
                 Effect::StartRenderThread,
@@ -287,6 +289,13 @@ mod tests {
             Event::MouseButton(MouseButtonEvent::Right),
         ]);
         assert_eq!(last_suppression(&effects), Some(false));
+    }
+
+    #[test]
+    fn startup_failure_is_reported_through_the_seam() {
+        let message = "Failed to register hotkey: Active (Ctrl+Shift+P)".to_string();
+        let (_, effects) = run(vec![Event::StartupFailed(message.clone())]);
+        assert!(effects.contains(&Effect::ReportError(message)));
     }
 
     #[test]

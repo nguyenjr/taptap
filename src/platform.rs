@@ -40,6 +40,7 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     InstallMouseHook,
+    RegisterHotkeys,
     RemoveMouseHook,
     StartRenderThread,
     StopRenderThread,
