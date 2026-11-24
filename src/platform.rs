@@ -18,11 +18,19 @@ pub enum MenuAction {
     Quit,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButtonEvent {
+    LeftDown,
+    LeftUp,
+    Right,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Start,
     Hotkey(Hotkey),
     Menu(MenuAction),
+    MouseButton(MouseButtonEvent),
     RenderFailed(String),
     StartupFailed(String),
     MessageLoopFailed,
@@ -41,6 +49,7 @@ pub enum Effect {
     PresentationChanged(bool),
     MuteChanged(bool),
     ScaleChanged(u32),
+    SuppressClick(bool),
     ShowOverlay,
     HideOverlay,
     PostQuit,

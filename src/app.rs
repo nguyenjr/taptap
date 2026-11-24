@@ -98,6 +98,9 @@ impl App {
                 };
                 self.command(command, platform);
             }
+            Event::MouseButton(_) => {
+                platform.emit(Effect::SuppressClick(self.suppression()));
+            }
             Event::StartupFailed(message) => platform.emit(Effect::ReportError(message)),
             Event::RenderFailed(message) => {
                 platform.emit(Effect::ReportError(message));
@@ -111,11 +114,16 @@ impl App {
         }
     }
 
+    fn suppression(&self) -> bool {
+        self.state.active && self.state.presentation
+    }
+
     fn command(&mut self, command: Command, platform: &mut dyn Platform) {
         match command {
             Command::ToggleActive => {
                 self.state.active = !self.state.active;
                 platform.emit(Effect::ActiveChanged(self.state.active));
+                platform.emit(Effect::SuppressClick(self.suppression()));
                 if self.state.active {
                     platform.emit(Effect::HideSystemCursors);
                     platform.emit(Effect::ShowOverlay);
@@ -127,6 +135,7 @@ impl App {
             Command::TogglePresentation => {
                 self.state.presentation = !self.state.presentation;
                 platform.emit(Effect::PresentationChanged(self.state.presentation));
+                platform.emit(Effect::SuppressClick(self.suppression()));
             }
             Command::ToggleMute => {
                 self.state.muted = !self.state.muted;
@@ -163,13 +172,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
-    use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction};
+    use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
         let mut platform = FakePlatform::new(events);
         let mut app = App::new();
         app.run(&mut platform);
         (app, platform.effects)
+    }
+
+    fn last_suppression(effects: &[Effect]) -> Option<bool> {
+        effects.iter().rev().find_map(|effect| match effect {
+            Effect::SuppressClick(suppress) => Some(*suppress),
+            _ => None,
+        })
     }
 
     #[test]
@@ -255,5 +271,35 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn presentation_suppresses_clicks_only_while_active() {
+        let (_, effects) = run(vec![
+            Event::Menu(MenuAction::TogglePresentation),
+            Event::MouseButton(MouseButtonEvent::LeftDown),
+        ]);
+        assert_eq!(last_suppression(&effects), Some(true));
+
+        let (_, effects) = run(vec![
+            Event::Menu(MenuAction::TogglePresentation),
+            Event::Hotkey(Hotkey::ToggleActive),
+            Event::MouseButton(MouseButtonEvent::Right),
+        ]);
+        assert_eq!(last_suppression(&effects), Some(false));
+    }
+
+    #[test]
+    fn quit_while_presenting_still_cleans_up() {
+        let (app, effects) = run(vec![
+            Event::Menu(MenuAction::TogglePresentation),
+            Event::Hotkey(Hotkey::Quit),
+        ]);
+        assert!(app.is_quit());
+        assert_eq!(last_suppression(&effects), Some(true));
+        assert!(effects.contains(&Effect::PostQuit));
+        assert!(effects.contains(&Effect::StopRenderThread));
+        assert!(effects.contains(&Effect::RemoveMouseHook));
+        assert!(effects.contains(&Effect::RestoreSystemCursors));
     }
 }
