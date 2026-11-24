@@ -1,0 +1,259 @@
+use crate::platform::{Effect, Event, Hotkey, MenuAction, Platform};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppState {
+    pub active: bool,
+    pub presentation: bool,
+    pub muted: bool,
+    pub scale_pct: u32,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            active: true,
+            presentation: false,
+            muted: false,
+            scale_pct: 100,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Command {
+    ToggleActive,
+    TogglePresentation,
+    ToggleMute,
+    ScaleUp,
+    ScaleDown,
+    SetScale(u32),
+    Quit,
+}
+
+pub struct App {
+    state: AppState,
+    quit: bool,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl App {
+    pub fn new() -> Self {
+        Self {
+            state: AppState::default(),
+            quit: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn state(&self) -> AppState {
+        self.state
+    }
+
+    #[cfg(test)]
+    pub fn is_quit(&self) -> bool {
+        self.quit
+    }
+
+    pub fn run(&mut self, platform: &mut dyn Platform) {
+        while let Some(event) = platform.next_event() {
+            self.handle(event, platform);
+            if self.quit {
+                return;
+            }
+        }
+        self.handle(Event::Shutdown, platform);
+    }
+
+    pub fn handle(&mut self, event: Event, platform: &mut dyn Platform) {
+        match event {
+            Event::Start => {
+                platform.emit(Effect::InstallMouseHook);
+                platform.emit(Effect::HideSystemCursors);
+                platform.emit(Effect::StartRenderThread);
+            }
+            Event::Hotkey(hotkey) => {
+                let command = match hotkey {
+                    Hotkey::ToggleActive => Command::ToggleActive,
+                    Hotkey::TogglePresentation => Command::TogglePresentation,
+                    Hotkey::ScaleUp => Command::ScaleUp,
+                    Hotkey::ScaleDown => Command::ScaleDown,
+                    Hotkey::Quit => Command::Quit,
+                };
+                self.command(command, platform);
+            }
+            Event::Menu(action) => {
+                let command = match action {
+                    MenuAction::ToggleActive => Command::ToggleActive,
+                    MenuAction::TogglePresentation => Command::TogglePresentation,
+                    MenuAction::ToggleMute => Command::ToggleMute,
+                    MenuAction::ScaleUp => Command::ScaleUp,
+                    MenuAction::ScaleDown => Command::ScaleDown,
+                    MenuAction::SetScale(pct) => Command::SetScale(pct),
+                    MenuAction::Quit => Command::Quit,
+                };
+                self.command(command, platform);
+            }
+            Event::StartupFailed(message) => platform.emit(Effect::ReportError(message)),
+            Event::RenderFailed(message) => {
+                platform.emit(Effect::ReportError(message));
+                self.shutdown(platform, true);
+            }
+            Event::MessageLoopFailed => {
+                platform.emit(Effect::ReportError("GetMessage failed".to_string()));
+                self.shutdown(platform, true);
+            }
+            Event::Shutdown => self.shutdown(platform, false),
+        }
+    }
+
+    fn command(&mut self, command: Command, platform: &mut dyn Platform) {
+        match command {
+            Command::ToggleActive => {
+                self.state.active = !self.state.active;
+                platform.emit(Effect::ActiveChanged(self.state.active));
+                if self.state.active {
+                    platform.emit(Effect::HideSystemCursors);
+                    platform.emit(Effect::ShowOverlay);
+                } else {
+                    platform.emit(Effect::RestoreSystemCursors);
+                    platform.emit(Effect::HideOverlay);
+                }
+            }
+            Command::TogglePresentation => {
+                self.state.presentation = !self.state.presentation;
+                platform.emit(Effect::PresentationChanged(self.state.presentation));
+            }
+            Command::ToggleMute => {
+                self.state.muted = !self.state.muted;
+                platform.emit(Effect::MuteChanged(self.state.muted));
+            }
+            Command::ScaleUp | Command::ScaleDown => {
+                let delta = match command {
+                    Command::ScaleUp => 10,
+                    _ => -10,
+                };
+                let next = (self.state.scale_pct as i32 + delta).clamp(50, 200) as u32;
+                self.state.scale_pct = next;
+                platform.emit(Effect::ScaleChanged(next));
+            }
+            Command::SetScale(pct) => {
+                self.state.scale_pct = pct;
+                platform.emit(Effect::ScaleChanged(pct));
+            }
+            Command::Quit => self.shutdown(platform, true),
+        }
+    }
+
+    fn shutdown(&mut self, platform: &mut dyn Platform, post_quit: bool) {
+        if post_quit {
+            platform.emit(Effect::PostQuit);
+        }
+        platform.emit(Effect::StopRenderThread);
+        platform.emit(Effect::RemoveMouseHook);
+        platform.emit(Effect::RestoreSystemCursors);
+        self.quit = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+    use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction};
+
+    fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
+        let mut platform = FakePlatform::new(events);
+        let mut app = App::new();
+        app.run(&mut platform);
+        (app, platform.effects)
+    }
+
+    #[test]
+    fn start_installs_hook_and_starts_render_thread() {
+        let (_, effects) = run(vec![Event::Start]);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::InstallMouseHook,
+                Effect::HideSystemCursors,
+                Effect::StartRenderThread,
+                Effect::StopRenderThread,
+                Effect::RemoveMouseHook,
+                Effect::RestoreSystemCursors,
+            ]
+        );
+    }
+
+    #[test]
+    fn hotkey_and_menu_toggle_active_identically() {
+        let by_hotkey = run(vec![Event::Hotkey(Hotkey::ToggleActive)]).1;
+        let by_menu = run(vec![Event::Menu(MenuAction::ToggleActive)]).1;
+        assert_eq!(by_hotkey, by_menu);
+    }
+
+    #[test]
+    fn scale_steps_clamp_and_presets_apply() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        for _ in 0..20 {
+            app.handle(Event::Hotkey(Hotkey::ScaleDown), &mut platform);
+        }
+        assert_eq!(app.state().scale_pct, 50);
+        for _ in 0..30 {
+            app.handle(Event::Hotkey(Hotkey::ScaleUp), &mut platform);
+        }
+        assert_eq!(app.state().scale_pct, 200);
+        app.handle(Event::Menu(MenuAction::SetScale(135)), &mut platform);
+        assert_eq!(app.state().scale_pct, 135);
+    }
+
+    #[test]
+    fn presentation_and_mute_toggle_from_both_sources() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(Event::Hotkey(Hotkey::TogglePresentation), &mut platform);
+        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
+        assert!(app.state().presentation);
+        assert!(app.state().muted);
+        app.handle(Event::Menu(MenuAction::TogglePresentation), &mut platform);
+        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
+        assert!(!app.state().presentation);
+        assert!(!app.state().muted);
+    }
+
+    #[test]
+    fn quit_posts_quit_and_cleans_up() {
+        let (app, effects) = run(vec![Event::Menu(MenuAction::Quit), Event::Start]);
+        assert!(app.is_quit());
+        assert!(effects.contains(&Effect::PostQuit));
+        assert!(effects.contains(&Effect::StopRenderThread));
+        assert!(effects.contains(&Effect::RemoveMouseHook));
+        assert!(effects.contains(&Effect::RestoreSystemCursors));
+        assert!(!effects.contains(&Effect::StartRenderThread));
+    }
+
+    #[test]
+    fn render_failure_shuts_down_cleanly() {
+        let (app, effects) = run(vec![Event::RenderFailed("DIB failed".to_string())]);
+        assert!(app.is_quit());
+        assert!(effects.contains(&Effect::ReportError("DIB failed".to_string())));
+        assert!(effects.contains(&Effect::PostQuit));
+        assert!(effects.contains(&Effect::RestoreSystemCursors));
+    }
+
+    #[test]
+    fn shutdown_restores_cursors_exactly_once() {
+        let (_, effects) = run(vec![]);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| **effect == Effect::RestoreSystemCursors)
+                .count(),
+            1
+        );
+    }
+}

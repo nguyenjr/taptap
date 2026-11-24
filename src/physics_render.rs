@@ -1,3 +1,5 @@
+use crate::hand_art;
+use crate::spring::Spring;
 use rand::Rng;
 use resvg::usvg::{Options, Tree};
 use tiny_skia::{
@@ -13,7 +15,11 @@ const SVG_TIP_Y: f32 = 22.0;
 const BASE_ANGLE_DEG: f32 = -22.0;
 const BASE_HAND_SCALE: f32 = 0.45;
 
-const HAND_SVG: &str = r##"
+fn hand_svg() -> String {
+    let silhouette = hand_art::glove_silhouette();
+    let glove = hand_art::glove_markup(6.5, 5.0, 5.0);
+    format!(
+        r##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 320" width="240" height="320">
   <defs>
     <linearGradient id="armFade" x1="0" y1="185" x2="0" y2="295" gradientUnits="userSpaceOnUse">
@@ -22,66 +28,29 @@ const HAND_SVG: &str = r##"
       <stop offset="100%" stop-color="#000000" stop-opacity="0.0" />
     </linearGradient>
   </defs>
-
   <path d="M 88 182 L 146 182 L 154 295 L 80 295 Z" fill="url(#armFade)" />
-
   <g transform="translate(4, 6)" opacity="0.22">
-    <path d="M 76 108
-             L 76 34 C 76 14, 104 14, 104 34 L 104 88
-             C 106 72, 128 72, 130 88
-             C 134 76, 154 78, 154 94
-             C 158 84, 176 90, 174 108
-             C 174 136, 160 156, 146 164
-             L 86 164
-             C 72 154, 62 140, 46 124
-             C 30 108, 48 86, 66 102 Z"
-          fill="#000000" />
-    <rect x="76" y="158" width="80" height="30" rx="10" fill="#000000" />
+    {silhouette}
   </g>
-
-  <path d="M 76 108
-           L 76 34 C 76 14, 104 14, 104 34 L 104 88
-           C 106 72, 128 72, 130 88
-           C 134 76, 154 78, 154 94
-           C 158 84, 176 90, 174 108
-           C 174 136, 160 156, 146 164
-           L 86 164
-           C 72 154, 62 140, 46 124
-           C 30 108, 48 86, 66 102 Z"
-        fill="#FFFFFF" stroke="#000000" stroke-width="6.5" stroke-linejoin="round" stroke-linecap="round" />
-
-  <path d="M 122 130 C 120 142, 118 150, 118 156"
-        fill="none" stroke="#000000" stroke-width="5" stroke-linecap="round" />
-  <path d="M 142 134 C 138 145, 132 152, 127 157"
-        fill="none" stroke="#000000" stroke-width="5" stroke-linecap="round" />
-
-  <rect x="76" y="158" width="80" height="30" rx="10"
-        fill="#FFFFFF" stroke="#000000" stroke-width="6.5" stroke-linejoin="round" />
-
-  <line x1="94" y1="166" x2="94" y2="180" stroke="#000000" stroke-width="5" stroke-linecap="round" />
-  <line x1="109" y1="166" x2="109" y2="180" stroke="#000000" stroke-width="5" stroke-linecap="round" />
-  <line x1="124" y1="166" x2="124" y2="180" stroke="#000000" stroke-width="5" stroke-linecap="round" />
-  <line x1="139" y1="166" x2="139" y2="180" stroke="#000000" stroke-width="5" stroke-linecap="round" />
+  {glove}
 </svg>
-"##;
-
-pub struct Spring {
-    pub val: f32,
-    pub vel: f32,
-    pub target: f32,
-    pub stiffness: f32,
-    pub damping: f32,
+"##
+    )
 }
 
-impl Spring {
-    pub fn new(val: f32, stiffness: f32, damping: f32) -> Self {
-        Self { val, vel: 0.0, target: val, stiffness, damping }
-    }
+fn solid_paint(r: u8, g: u8, b: u8, alpha: u8) -> Paint<'static> {
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(r, g, b, alpha);
+    paint.anti_alias = true;
+    paint
+}
 
-    pub fn update(&mut self, dt: f32) {
-        let force = (self.target - self.val) * self.stiffness;
-        self.vel = (self.vel + force * dt) * (-self.damping * dt).exp();
-        self.val += self.vel * dt;
+fn round_stroke(width: f32) -> Stroke {
+    Stroke {
+        width,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        ..Default::default()
     }
 }
 
@@ -105,9 +74,9 @@ struct ImpactBurst {
 pub struct PokeAnimator {
     hand_pixmap: Pixmap,
     canvas: Pixmap,
-    pub poke_spring: Spring,
-    pub tilt_spring: Spring,
-    pub scale_spring: Spring,
+    poke_spring: Spring,
+    tilt_spring: Spring,
+    scale_spring: Spring,
     pub combo_heat: f32,
     bursts: Vec<ImpactBurst>,
 }
@@ -115,7 +84,8 @@ pub struct PokeAnimator {
 impl PokeAnimator {
     pub fn new() -> Self {
         let opt = Options::default();
-        let tree = Tree::from_str(HAND_SVG, &opt).expect("Valid embedded SVG");
+        let svg = hand_svg();
+        let tree = Tree::from_str(&svg, &opt).expect("Valid embedded SVG");
         let mut hand_pixmap = Pixmap::new(240, 320).unwrap();
         resvg::render(&tree, Transform::default(), &mut hand_pixmap.as_mut());
 
@@ -135,16 +105,14 @@ impl PokeAnimator {
             self.combo_heat = (self.combo_heat + 1.2).min(12.0);
             let intensity = 1.0 + self.combo_heat * 0.18;
 
-            self.poke_spring.val = -12.0 * intensity.min(2.2);
-            self.poke_spring.vel = 620.0 * intensity;
-
-            self.tilt_spring.val = 10.0 * intensity.min(2.0);
-            self.tilt_spring.vel = -360.0 * intensity;
-
-            self.scale_spring.vel += 2.2;
+            self.poke_spring
+                .set(-12.0 * intensity.min(2.2), 620.0 * intensity);
+            self.tilt_spring
+                .set(10.0 * intensity.min(2.0), -360.0 * intensity);
+            self.scale_spring.add_velocity(2.2);
             self.spawn_impact_burst();
         } else {
-            self.poke_spring.vel -= 140.0;
+            self.poke_spring.add_velocity(-140.0);
         }
     }
 
@@ -202,7 +170,7 @@ impl PokeAnimator {
         }
 
         let raw_target = (BASE_HAND_SCALE + self.combo_heat * 0.045) * user_scale;
-        self.scale_spring.target = raw_target.min(1.15);
+        self.scale_spring.set_target(raw_target.min(1.15));
 
         self.poke_spring.update(dt);
         self.tilt_spring.update(dt);
@@ -280,20 +248,9 @@ impl PokeAnimator {
             }
 
             if let Some(rays_path) = rays_pb.finish() {
-                let mut fill_paint = Paint::default();
-                fill_paint.set_color_rgba8(r_col, g_col, b_col, 255);
-                fill_paint.anti_alias = true;
-
-                let mut outline_paint = Paint::default();
-                outline_paint.set_color_rgba8(0, 0, 0, 255);
-                outline_paint.anti_alias = true;
-
-                let outline_stroke = Stroke {
-                    width: 4.5 * effect_scale,
-                    line_cap: LineCap::Round,
-                    line_join: LineJoin::Round,
-                    ..Default::default()
-                };
+                let fill_paint = solid_paint(r_col, g_col, b_col, 255);
+                let outline_paint = solid_paint(0, 0, 0, 255);
+                let outline_stroke = round_stroke(4.5 * effect_scale);
 
                 self.canvas.stroke_path(
                     &rays_path,
@@ -338,35 +295,20 @@ impl PokeAnimator {
                     if let Some(arc_path) = arc_pb.finish() {
                         let arc_thick = (2.5 + b.heat_at_spawn * 0.25).min(5.5) * arc_pop * effect_scale;
 
-                        let mut outline_paint = Paint::default();
-                        outline_paint.set_color_rgba8(0, 0, 0, 255);
-                        outline_paint.anti_alias = true;
-
-                        let mut inner_paint = Paint::default();
-                        inner_paint.set_color_rgba8(r_col, g_col, b_col, 255);
-                        inner_paint.anti_alias = true;
+                        let outline_paint = solid_paint(0, 0, 0, 255);
+                        let inner_paint = solid_paint(r_col, g_col, b_col, 255);
 
                         self.canvas.stroke_path(
                             &arc_path,
                             &outline_paint,
-                            &Stroke {
-                                width: arc_thick + 3.8 * effect_scale,
-                                line_cap: LineCap::Round,
-                                line_join: LineJoin::Round,
-                                ..Default::default()
-                            },
+                            &round_stroke(arc_thick + 3.8 * effect_scale),
                             Transform::default(),
                             None,
                         );
                         self.canvas.stroke_path(
                             &arc_path,
                             &inner_paint,
-                            &Stroke {
-                                width: arc_thick,
-                                line_cap: LineCap::Round,
-                                line_join: LineJoin::Round,
-                                ..Default::default()
-                            },
+                            &round_stroke(arc_thick),
                             Transform::default(),
                             None,
                         );
@@ -382,9 +324,9 @@ impl PokeAnimator {
         let effect_scale = (dpi_scale * user_scale.sqrt()).clamp(0.6, 2.5);
         self.draw_impact_bursts(effect_scale);
 
-        let total_scale = (self.scale_spring.val * dpi_scale).clamp(0.20, 1.45);
-        let poke_dist = self.poke_spring.val * effect_scale;
-        let angle_deg = BASE_ANGLE_DEG + self.tilt_spring.val.clamp(-35.0, 35.0);
+        let total_scale = (self.scale_spring.value() * dpi_scale).clamp(0.20, 1.45);
+        let poke_dist = self.poke_spring.value() * effect_scale;
+        let angle_deg = BASE_ANGLE_DEG + self.tilt_spring.value().clamp(-35.0, 35.0);
 
         let rad = BASE_ANGLE_DEG.to_radians();
         let dir_x = rad.sin();
@@ -413,9 +355,7 @@ impl PokeAnimator {
                 HOTSPOT_Y as f32,
                 8.0 * effect_scale,
             ) {
-                let mut stroke_paint = Paint::default();
-                stroke_paint.set_color_rgba8(255, 65, 54, 220);
-                stroke_paint.anti_alias = true;
+                let stroke_paint = solid_paint(255, 65, 54, 220);
                 let stroke = Stroke {
                     width: 2.5 * effect_scale,
                     ..Default::default()
