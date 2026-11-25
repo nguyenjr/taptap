@@ -1,3 +1,5 @@
+use crate::settings::Settings;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hotkey {
     ToggleActive,
@@ -34,6 +36,9 @@ pub enum Event {
     RenderFailed(String),
     StartupFailed(String),
     MessageLoopFailed,
+    SettingsLoaded(Settings),
+    SettingsLoadFailed(String),
+    SettingsSaveFailed(String),
     Shutdown,
 }
 
@@ -55,6 +60,8 @@ pub enum Effect {
     HideOverlay,
     PostQuit,
     ReportError(String),
+    LoadSettings,
+    SaveSettings(Settings),
 }
 
 pub trait Platform {

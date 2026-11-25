@@ -6,6 +6,7 @@ mod cursor;
 mod hand_art;
 mod physics_render;
 mod platform;
+mod settings;
 mod spring;
 
 use app::App;
@@ -699,6 +700,15 @@ impl Platform for Win32Platform {
                 PostQuitMessage(0);
             },
             Effect::ReportError(message) => eprintln!("TapTap: {message}"),
+            Effect::LoadSettings => match settings::Settings::load() {
+                Ok(settings) => self.pending.push_back(Event::SettingsLoaded(settings)),
+                Err(error) => self.pending.push_back(Event::SettingsLoadFailed(error)),
+            },
+            Effect::SaveSettings(settings) => {
+                if let Err(error) = settings.save() {
+                    self.pending.push_back(Event::SettingsSaveFailed(error));
+                }
+            }
         }
     }
 }

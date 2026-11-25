@@ -1,4 +1,5 @@
 use crate::platform::{Effect, Event, Hotkey, MenuAction, Platform};
+use crate::settings::Settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppState {
@@ -72,6 +73,7 @@ impl App {
     pub fn handle(&mut self, event: Event, platform: &mut dyn Platform) {
         match event {
             Event::Start => {
+                platform.emit(Effect::LoadSettings);
                 platform.emit(Effect::RegisterHotkeys);
                 platform.emit(Effect::InstallMouseHook);
                 platform.emit(Effect::HideSystemCursors);
@@ -101,6 +103,15 @@ impl App {
             }
             Event::MouseButton(_) => {
                 platform.emit(Effect::SuppressClick(self.suppression()));
+            }
+            Event::SettingsLoaded(settings) => {
+                self.state.scale_pct = settings.scale_pct;
+                self.state.muted = settings.muted;
+                platform.emit(Effect::ScaleChanged(settings.scale_pct));
+                platform.emit(Effect::MuteChanged(settings.muted));
+            }
+            Event::SettingsLoadFailed(message) | Event::SettingsSaveFailed(message) => {
+                platform.emit(Effect::ReportError(message));
             }
             Event::StartupFailed(message) => platform.emit(Effect::ReportError(message)),
             Event::RenderFailed(message) => {
@@ -141,6 +152,7 @@ impl App {
             Command::ToggleMute => {
                 self.state.muted = !self.state.muted;
                 platform.emit(Effect::MuteChanged(self.state.muted));
+                platform.emit(Effect::SaveSettings(self.settings()));
             }
             Command::ScaleUp | Command::ScaleDown => {
                 let delta = match command {
@@ -150,12 +162,21 @@ impl App {
                 let next = (self.state.scale_pct as i32 + delta).clamp(50, 200) as u32;
                 self.state.scale_pct = next;
                 platform.emit(Effect::ScaleChanged(next));
+                platform.emit(Effect::SaveSettings(self.settings()));
             }
             Command::SetScale(pct) => {
                 self.state.scale_pct = pct;
                 platform.emit(Effect::ScaleChanged(pct));
+                platform.emit(Effect::SaveSettings(self.settings()));
             }
             Command::Quit => self.shutdown(platform, true),
+        }
+    }
+
+    fn settings(&self) -> Settings {
+        Settings {
+            scale_pct: self.state.scale_pct,
+            muted: self.state.muted,
         }
     }
 
@@ -174,6 +195,7 @@ impl App {
 mod tests {
     use super::App;
     use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
+    use crate::settings::Settings;
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
         let mut platform = FakePlatform::new(events);
@@ -195,6 +217,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![
+                Effect::LoadSettings,
                 Effect::RegisterHotkeys,
                 Effect::InstallMouseHook,
                 Effect::HideSystemCursors,
@@ -203,6 +226,74 @@ mod tests {
                 Effect::RemoveMouseHook,
                 Effect::RestoreSystemCursors,
             ]
+        );
+    }
+
+    #[test]
+    fn start_loads_settings_before_startup_effects() {
+        let (_, effects) = run(vec![Event::Start]);
+        assert_eq!(effects.first(), Some(&Effect::LoadSettings));
+    }
+
+    #[test]
+    fn settings_loaded_applies_through_existing_effects_without_saving() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(
+            Event::SettingsLoaded(Settings {
+                scale_pct: 175,
+                muted: true,
+            }),
+            &mut platform,
+        );
+        assert_eq!(app.state().scale_pct, 175);
+        assert!(app.state().muted);
+        assert_eq!(
+            platform.effects,
+            vec![Effect::ScaleChanged(175), Effect::MuteChanged(true)]
+        );
+    }
+
+    #[test]
+    fn scale_and_mute_changes_save_a_full_snapshot() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(Event::Hotkey(Hotkey::ScaleUp), &mut platform);
+        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
+        assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
+            scale_pct: 110,
+            muted: false,
+        })));
+        assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
+            scale_pct: 110,
+            muted: true,
+        })));
+    }
+
+    #[test]
+    fn settings_failures_are_reported_without_shutdown() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(
+            Event::SettingsLoadFailed("bad file".to_string()),
+            &mut platform,
+        );
+        assert!(!app.is_quit());
+        assert_eq!(
+            platform.effects,
+            vec![Effect::ReportError("bad file".to_string())]
+        );
+
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(
+            Event::SettingsSaveFailed("save failed".to_string()),
+            &mut platform,
+        );
+        assert!(!app.is_quit());
+        assert_eq!(
+            platform.effects,
+            vec![Effect::ReportError("save failed".to_string())]
         );
     }
 
