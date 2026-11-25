@@ -7,9 +7,6 @@ on:
 jobs:
   verify:
     runs-on: windows-latest
-    permissions:
-      contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -21,9 +18,8 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked -- --skip menu_quit_event_is_delivered_on_the_first_message
       - run: cargo build --release --locked
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
       - uses: actions/upload-artifact@v4
         with:
           name: taptap
