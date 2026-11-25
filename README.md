@@ -1,6 +1,6 @@
-# taptap
+# TapTap
 
-**taptap** is a lightweight, high-performance animated mouse cursor overlay for Windows. Built in native Rust with the Win32 API, it replaces the system cursor with a spring-driven cartoon glove that reacts to rapid clicking with comic-book impact lines and synthesized sounds.
+**TapTap** is a lightweight, high-performance animated mouse cursor overlay for Windows. Built in native Rust with the Win32 API, it replaces the system cursor with a spring-driven cartoon glove that reacts to rapid clicking with comic-book impact lines and synthesized sounds.
 
 ---
 
