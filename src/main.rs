@@ -13,7 +13,7 @@ mod spring;
 use app::App;
 use audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use overlay_state::{OverlayState, OverlayStateSnapshot};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
 use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
@@ -146,27 +146,201 @@ fn hotkey_binding(hotkey: Hotkey) -> &'static HotkeyBinding {
         .expect("every hotkey has a binding")
 }
 
-const SIZE_PRESETS: [(u32, &str); 4] = [
-    (75, "Small (75%)"),
-    (100, "Medium (100% - Default)"),
-    (135, "Large (135%)"),
-    (175, "Extra Large (175%)"),
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuGroup {
+    Root,
+    HandSize,
+    ClickSound,
+    Volume,
+}
+
+struct MenuBinding {
+    id: &'static str,
+    label: Option<&'static str>,
+    hotkey: Option<Hotkey>,
+    action: MenuAction,
+    group: MenuGroup,
+    checked: bool,
+}
+
+impl MenuBinding {
+    fn label(&self) -> &str {
+        match self.hotkey {
+            Some(hotkey) => hotkey_binding(hotkey).menu_label,
+            None => self.label.expect("non-hotkey menu item has a label"),
+        }
+    }
+}
+
+const MENU_BINDINGS: &[MenuBinding] = &[
+    MenuBinding {
+        id: "active",
+        label: None,
+        hotkey: Some(Hotkey::ToggleActive),
+        action: MenuAction::ToggleActive,
+        group: MenuGroup::Root,
+        checked: true,
+    },
+    MenuBinding {
+        id: "presentation",
+        label: None,
+        hotkey: Some(Hotkey::TogglePresentation),
+        action: MenuAction::TogglePresentation,
+        group: MenuGroup::Root,
+        checked: false,
+    },
+    MenuBinding {
+        id: "size-up",
+        label: None,
+        hotkey: Some(Hotkey::ScaleUp),
+        action: MenuAction::ScaleUp,
+        group: MenuGroup::Root,
+        checked: false,
+    },
+    MenuBinding {
+        id: "size-down",
+        label: None,
+        hotkey: Some(Hotkey::ScaleDown),
+        action: MenuAction::ScaleDown,
+        group: MenuGroup::Root,
+        checked: false,
+    },
+    MenuBinding {
+        id: "quit",
+        label: None,
+        hotkey: Some(Hotkey::Quit),
+        action: MenuAction::Quit,
+        group: MenuGroup::Root,
+        checked: false,
+    },
+    MenuBinding {
+        id: "scale-75",
+        label: Some("Small (75%)"),
+        hotkey: None,
+        action: MenuAction::SetScale(75),
+        group: MenuGroup::HandSize,
+        checked: false,
+    },
+    MenuBinding {
+        id: "scale-100",
+        label: Some("Medium (100% - Default)"),
+        hotkey: None,
+        action: MenuAction::SetScale(100),
+        group: MenuGroup::HandSize,
+        checked: true,
+    },
+    MenuBinding {
+        id: "scale-135",
+        label: Some("Large (135%)"),
+        hotkey: None,
+        action: MenuAction::SetScale(135),
+        group: MenuGroup::HandSize,
+        checked: false,
+    },
+    MenuBinding {
+        id: "scale-175",
+        label: Some("Extra Large (175%)"),
+        hotkey: None,
+        action: MenuAction::SetScale(175),
+        group: MenuGroup::HandSize,
+        checked: false,
+    },
+    MenuBinding {
+        id: "sound-wood",
+        label: Some("Wood Knock"),
+        hotkey: None,
+        action: MenuAction::SetSound(SoundPreset::Wood),
+        group: MenuGroup::ClickSound,
+        checked: true,
+    },
+    MenuBinding {
+        id: "sound-click",
+        label: Some("Click"),
+        hotkey: None,
+        action: MenuAction::SetSound(SoundPreset::Click),
+        group: MenuGroup::ClickSound,
+        checked: false,
+    },
+    MenuBinding {
+        id: "sound-bell",
+        label: Some("Bell"),
+        hotkey: None,
+        action: MenuAction::SetSound(SoundPreset::Bell),
+        group: MenuGroup::ClickSound,
+        checked: false,
+    },
+    MenuBinding {
+        id: "sound-pop",
+        label: Some("Pop"),
+        hotkey: None,
+        action: MenuAction::SetSound(SoundPreset::Pop),
+        group: MenuGroup::ClickSound,
+        checked: false,
+    },
+    MenuBinding {
+        id: "volume-0",
+        label: Some("Off"),
+        hotkey: None,
+        action: MenuAction::SetVolume(0),
+        group: MenuGroup::Volume,
+        checked: false,
+    },
+    MenuBinding {
+        id: "volume-25",
+        label: Some("Quiet (25%)"),
+        hotkey: None,
+        action: MenuAction::SetVolume(25),
+        group: MenuGroup::Volume,
+        checked: false,
+    },
+    MenuBinding {
+        id: "volume-50",
+        label: Some("50%"),
+        hotkey: None,
+        action: MenuAction::SetVolume(50),
+        group: MenuGroup::Volume,
+        checked: false,
+    },
+    MenuBinding {
+        id: "volume-75",
+        label: Some("75%"),
+        hotkey: None,
+        action: MenuAction::SetVolume(75),
+        group: MenuGroup::Volume,
+        checked: false,
+    },
+    MenuBinding {
+        id: "volume-100",
+        label: Some("100% (Default)"),
+        hotkey: None,
+        action: MenuAction::SetVolume(100),
+        group: MenuGroup::Volume,
+        checked: true,
+    },
 ];
 
-const SOUND_OPTIONS: [(SoundPreset, &str); 4] = [
-    (SoundPreset::Wood, "Wood Knock"),
-    (SoundPreset::Click, "Click"),
-    (SoundPreset::Bell, "Bell"),
-    (SoundPreset::Pop, "Pop"),
-];
+fn menu_binding(action: MenuAction) -> &'static MenuBinding {
+    MENU_BINDINGS
+        .iter()
+        .find(|binding| binding.action == action)
+        .expect("every menu action has a binding")
+}
 
-const VOLUME_OPTIONS: [(u8, &str); 5] = [
-    (0, "Off"),
-    (25, "Quiet (25%)"),
-    (50, "50%"),
-    (75, "75%"),
-    (100, "100% (Default)"),
-];
+fn check_item(action: MenuAction) -> CheckMenuItem {
+    let binding = menu_binding(action);
+    CheckMenuItem::with_id(
+        MenuId::new(binding.id),
+        binding.label(),
+        true,
+        binding.checked,
+        None,
+    )
+}
+
+fn plain_item(action: MenuAction) -> MenuItem {
+    let binding = menu_binding(action);
+    MenuItem::with_id(MenuId::new(binding.id), binding.label(), true, None)
+}
 
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
@@ -417,11 +591,8 @@ struct TrayControls {
     item_active: CheckMenuItem,
     item_pres: CheckMenuItem,
     size_items: Vec<(u32, CheckMenuItem)>,
-    item_size_up: MenuItem,
-    item_size_down: MenuItem,
     sound_items: Vec<(SoundPreset, CheckMenuItem)>,
     volume_items: Vec<(u8, CheckMenuItem)>,
-    item_quit: MenuItem,
 }
 
 impl TrayControls {
@@ -442,53 +613,58 @@ impl TrayControls {
 
 fn create_tray_icon() -> TrayControls {
     let menu = Menu::new();
-    let item_active = CheckMenuItem::new(
-        hotkey_binding(Hotkey::ToggleActive).menu_label,
-        true,
-        true,
-        None,
-    );
-    let item_pres = CheckMenuItem::new(
-        hotkey_binding(Hotkey::TogglePresentation).menu_label,
-        true,
-        false,
-        None,
-    );
+    let item_active = check_item(MenuAction::ToggleActive);
+    let item_pres = check_item(MenuAction::TogglePresentation);
+    let _ = menu.append(&item_active);
+    let _ = menu.append(&item_pres);
+    let _ = menu.append(&PredefinedMenuItem::separator());
+
     let size_submenu = Submenu::new("Hand Size", true);
-    let mut size_items = Vec::with_capacity(SIZE_PRESETS.len());
-    for (pct, label) in SIZE_PRESETS {
-        let is_default = pct == 100;
-        let check_item = CheckMenuItem::new(label, true, is_default, None);
-        let _ = size_submenu.append(&check_item);
-        size_items.push((pct, check_item));
+    let size_items: Vec<(u32, CheckMenuItem)> = MENU_BINDINGS
+        .iter()
+        .filter(|binding| binding.group == MenuGroup::HandSize)
+        .filter_map(|binding| match binding.action {
+            MenuAction::SetScale(pct) => Some((pct, check_item(binding.action))),
+            _ => None,
+        })
+        .collect();
+    for (_, item) in &size_items {
+        let _ = size_submenu.append(item);
     }
     let _ = size_submenu.append(&PredefinedMenuItem::separator());
-    let item_size_up = MenuItem::new(hotkey_binding(Hotkey::ScaleUp).menu_label, true, None);
-    let item_size_down = MenuItem::new(hotkey_binding(Hotkey::ScaleDown).menu_label, true, None);
+    let item_size_up = plain_item(MenuAction::ScaleUp);
+    let item_size_down = plain_item(MenuAction::ScaleDown);
     let _ = size_submenu.append(&item_size_up);
     let _ = size_submenu.append(&item_size_down);
 
     let sound_submenu = Submenu::new("Click Sound", true);
-    let mut sound_items = Vec::with_capacity(SOUND_OPTIONS.len());
-    for (preset, label) in SOUND_OPTIONS {
-        let check_item = CheckMenuItem::new(label, true, preset == SoundPreset::Wood, None);
-        let _ = sound_submenu.append(&check_item);
-        sound_items.push((preset, check_item));
+    let sound_items: Vec<(SoundPreset, CheckMenuItem)> = MENU_BINDINGS
+        .iter()
+        .filter(|binding| binding.group == MenuGroup::ClickSound)
+        .filter_map(|binding| match binding.action {
+            MenuAction::SetSound(preset) => Some((preset, check_item(binding.action))),
+            _ => None,
+        })
+        .collect();
+    for (_, item) in &sound_items {
+        let _ = sound_submenu.append(item);
     }
 
     let volume_submenu = Submenu::new("Volume", true);
-    let mut volume_items = Vec::with_capacity(VOLUME_OPTIONS.len());
-    for (level, label) in VOLUME_OPTIONS {
-        let check_item = CheckMenuItem::new(label, true, level == 100, None);
-        let _ = volume_submenu.append(&check_item);
-        volume_items.push((level, check_item));
+    let volume_items: Vec<(u8, CheckMenuItem)> = MENU_BINDINGS
+        .iter()
+        .filter(|binding| binding.group == MenuGroup::Volume)
+        .filter_map(|binding| match binding.action {
+            MenuAction::SetVolume(level) => Some((level, check_item(binding.action))),
+            _ => None,
+        })
+        .collect();
+    for (_, item) in &volume_items {
+        let _ = volume_submenu.append(item);
     }
 
-    let item_quit = MenuItem::new(hotkey_binding(Hotkey::Quit).menu_label, true, None);
+    let item_quit = plain_item(MenuAction::Quit);
 
-    let _ = menu.append(&item_active);
-    let _ = menu.append(&item_pres);
-    let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&size_submenu);
     let _ = menu.append(&sound_submenu);
     let _ = menu.append(&volume_submenu);
@@ -520,11 +696,8 @@ fn create_tray_icon() -> TrayControls {
         item_active,
         item_pres,
         size_items,
-        item_size_up,
-        item_size_down,
         sound_items,
         volume_items,
-        item_quit,
     }
 }
 
@@ -535,36 +708,11 @@ fn hotkey_from_wparam(wparam: WPARAM) -> Option<Hotkey> {
         .map(|binding| binding.hotkey)
 }
 
-fn menu_action(event: &MenuEvent, controls: &TrayControls) -> Option<MenuAction> {
-    if event.id == controls.item_active.id() {
-        Some(MenuAction::ToggleActive)
-    } else if event.id == controls.item_pres.id() {
-        Some(MenuAction::TogglePresentation)
-    } else if event.id == controls.item_size_up.id() {
-        Some(MenuAction::ScaleUp)
-    } else if event.id == controls.item_size_down.id() {
-        Some(MenuAction::ScaleDown)
-    } else if event.id == controls.item_quit.id() {
-        Some(MenuAction::Quit)
-    } else if let Some((preset, _)) = controls
-        .sound_items
+fn menu_action(event: &MenuEvent) -> Option<MenuAction> {
+    MENU_BINDINGS
         .iter()
-        .find(|(_, item)| event.id == item.id())
-    {
-        Some(MenuAction::SetSound(*preset))
-    } else if let Some((level, _)) = controls
-        .volume_items
-        .iter()
-        .find(|(_, item)| event.id == item.id())
-    {
-        Some(MenuAction::SetVolume(*level))
-    } else {
-        controls
-            .size_items
-            .iter()
-            .find(|(_, item)| event.id == item.id())
-            .map(|(pct, _)| MenuAction::SetScale(*pct))
-    }
+        .find(|binding| event.id == binding.id)
+        .map(|binding| binding.action)
 }
 
 fn register_hotkeys() -> Vec<String> {
@@ -642,7 +790,7 @@ impl Win32Platform {
 
     fn collect_pending(&mut self) {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if let Some(action) = menu_action(&event, &self.controls) {
+            if let Some(action) = menu_action(&event) {
                 self.pending.push_back(Event::Menu(action));
             }
         }
@@ -874,14 +1022,25 @@ mod tests {
         }
     }
 
-    fn quit_command_id(hwnd: HWND, controls: &TrayControls) -> u32 {
+    #[test]
+    fn menu_bindings_map_every_item_to_an_action() {
+        for binding in MENU_BINDINGS {
+            let event = MenuEvent {
+                id: MenuId::new(binding.id),
+            };
+            assert_eq!(menu_action(&event), Some(binding.action));
+        }
+    }
+
+    fn quit_command_id(hwnd: HWND) -> u32 {
+        let quit_id = menu_binding(MenuAction::Quit).id;
         for id in 1000..1200u32 {
             unsafe {
                 let _ = PostMessageW(hwnd, WM_COMMAND, WPARAM(id as usize), LPARAM(0));
             }
             drain_messages();
-            while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
-                if event.id == *controls.item_quit.id() {
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                if event.id == quit_id {
                     return id;
                 }
             }
@@ -894,7 +1053,7 @@ mod tests {
         let hwnd = test_window();
         let controls = create_tray_icon();
         let tray_hwnd = tray_window();
-        let quit_id = quit_command_id(tray_hwnd, &controls);
+        let quit_id = quit_command_id(tray_hwnd);
         let mut platform = Win32Platform::new(
             hwnd,
             controls,
