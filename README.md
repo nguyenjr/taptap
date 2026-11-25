@@ -1,28 +1,49 @@
 # taptap
 
-A Windows cursor overlay that replaces the system pointer with an animated cartoon hand. Clicks poke and tilt the hand, fire a comic impact burst, and play a short synthesized sound. Rapid clicks build "combo heat", which escalates the animation and the pitch of the sound.
+**taptap** is a lightweight, high-performance animated mouse cursor overlay for Windows. Built in native Rust with the Win32 API, it replaces the system cursor with a spring-driven cartoon glove that reacts to rapid clicking with comic-book impact lines and synthesized sounds.
 
-## Controls
+---
 
-### Keyboard
+## Features
+
+- **Transparent click-through overlay** — renders above applications without blocking the input underneath.
+- **Spring-driven animation** — damped oscillators drive translation, wrist tilt, and scaling. Rapid clicks compound combo heat, winding the hand up for harder strikes.
+- **Cartoon impact effects** — tapered comic rays, staggered burst timing, and secondary shockwave arcs around the fingertip.
+- **Procedural audio** — four built-in click sounds (Wood Knock, Click, Bell, and a balloon-pop Pop) generated in memory with no asset files. Combo heat raises pitch and intensity; volume runs from Off to 100%.
+- **Presentation Mode** — suppresses mouse clicks globally while keeping the animation and sound, so you can point at screen elements without activating them. Keyboard hotkeys remain the way out.
+- **Customizable hand size** — presets (75%, 100%, 135%, 175%) plus 10% steps, clamped to 50–200%.
+- **Robust failsafes** — restores the system cursors on exit, crash, or emergency termination.
+- **Single-instance enforcement** — a global OS mutex guarantees only one instance runs.
+- **Per-monitor DPI scaling** — keeps the hand correctly sized on mixed-DPI displays.
+- **Persisted settings** — hand size, click sound, and volume survive restarts.
+
+---
+
+## Global Hotkeys
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Shift+P` | Toggle the overlay on/off |
-| `Ctrl+Shift+M` | Toggle Presentation Mode |
-| `Ctrl+Shift+=` | Increase hand size by 10% |
-| `Ctrl+Shift+-` | Decrease hand size by 10% |
-| `Ctrl+Shift+Q` | Quit |
+| `Ctrl + Shift + P` | Toggle the overlay Active / Inactive (restores the system cursor) |
+| `Ctrl + Shift + M` | Toggle Presentation Mode (blocks clicks while keeping animation and sound) |
+| `Ctrl + Shift + =` | Increase hand size by 10% |
+| `Ctrl + Shift + -` | Decrease hand size by 10% |
+| `Ctrl + Shift + Q` | Emergency quit and cursor restore |
 
-### Tray menu
+---
 
-- **Active** / **Presentation Mode** — the same toggles as the hotkeys.
-- **Hand Size** — presets (75%, 100%, 135%, 175%) plus 10% increase/decrease. Values are clamped to 50–200%.
-- **Click Sound** — Wood Knock, Click, Bell, or Pop.
-- **Volume** — Off, Quiet (25%), 50%, 75%, or 100%.
-- **Quit**.
+## System Tray
 
-**Presentation Mode deliberately suppresses mouse clicks across the desktop.** The tray menu cannot be clicked while it is on, so use the keyboard hotkeys to leave that state or quit.
+Right-click the tray icon to:
+
+- Toggle Active and Presentation Mode.
+- Choose a hand size from the presets or the 10% increase/decrease items.
+- Choose a Click Sound: Wood Knock, Click, Bell, or Pop.
+- Choose a Volume: Off, Quiet (25%), 50%, 75%, or 100%. `Off` replaces the old Mute Audio item.
+- Quit.
+
+Presentation Mode deliberately suppresses mouse clicks across the desktop, so the tray cannot be used while it is on — use the hotkeys to leave that state or quit.
+
+---
 
 ## Settings
 
@@ -36,10 +57,34 @@ volume=100
 
 Missing or invalid values fall back to the defaults (`100`, `wood`, `100`); unknown keys are ignored. Set `volume=0` (or pick **Off** in the tray) for silence.
 
-## Notes
+---
 
-- Windows only; build with `cargo build --release`. Release builds run without a console window.
-- Single instance: launching again exits without disturbing the running one.
-- The system cursor is restored on quit, on Ctrl+C / window close, and on panic.
-- Per-monitor DPI scaling keeps the hand sized correctly on mixed-DPI displays.
-- Artwork and sounds are generated at runtime; there are no external asset files.
+## Building from Source
+
+### Prerequisites
+
+- Rust toolchain (stable MSVC toolchain via [rustup](https://rustup.rs/))
+- Cargo (bundled with Rust)
+
+### Compilation Steps
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/your-username/taptap.git
+cd taptap
+```
+
+2. Build the release binary (size optimizations and embedded Windows resources/icon):
+
+```bash
+cargo build --release
+```
+
+3. Find the standalone executable at:
+
+```text
+target\release\taptap.exe
+```
+
+Release builds run without a console window.
