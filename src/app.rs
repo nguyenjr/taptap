@@ -166,14 +166,14 @@ mod tests {
         app.handle(
             Event::SettingsLoaded(Settings {
                 scale_pct: 175,
-                hand_style: HandStyle(1),
+                hand_style: HandStyle::GINGERBREAD,
                 sound: SoundPreset::Bell,
                 volume: 25,
             }),
             &mut platform,
         );
         assert_eq!(app.state().scale_pct, 175);
-        assert_eq!(app.state().hand_style, HandStyle(1));
+        assert_eq!(app.state().hand_style, HandStyle::GINGERBREAD);
         assert_eq!(app.state().sound, SoundPreset::Bell);
         assert_eq!(app.state().volume, 25);
         assert_eq!(platform.effects, vec![Effect::StateChanged]);
@@ -196,13 +196,13 @@ mod tests {
         let mut platform = FakePlatform::new(vec![]);
         let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(
-            Event::Menu(MenuAction::SetHand(HandStyle(1))),
+            Event::Menu(MenuAction::SetHand(HandStyle::GINGERBREAD)),
             &mut platform,
         );
-        assert_eq!(app.state().hand_style, HandStyle(1));
+        assert_eq!(app.state().hand_style, HandStyle::GINGERBREAD);
         assert!(platform.effects.contains(&Effect::StateChanged));
         assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
-            hand_style: HandStyle(1),
+            hand_style: HandStyle::GINGERBREAD,
             ..Default::default()
         })));
     }

@@ -270,7 +270,7 @@ mod tests {
         let file = dir.file();
         let settings = Settings {
             scale_pct: 175,
-            hand_style: HandStyle(1),
+            hand_style: HandStyle::GINGERBREAD,
             sound: SoundPreset::Bell,
             volume: 25,
         };
@@ -367,7 +367,7 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, "hand_style=gingerbread\nsound=jingle\n").unwrap();
         let settings = Settings::load_from(&file).unwrap();
-        assert_eq!(settings.hand_style, HandStyle(1));
+        assert_eq!(settings.hand_style, HandStyle::GINGERBREAD);
         assert_eq!(settings.sound, SoundPreset::JingleBell);
         settings.save_to(&file).unwrap();
         assert_eq!(

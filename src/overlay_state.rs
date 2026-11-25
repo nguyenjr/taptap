@@ -67,7 +67,7 @@ impl OverlayState {
             active: AtomicBool::new(defaults.active),
             presentation: AtomicBool::new(defaults.presentation),
             scale_pct: AtomicU32::new(defaults.scale_pct),
-            hand_style: AtomicU8::new(defaults.hand_style.0),
+            hand_style: AtomicU8::new(defaults.hand_style.as_u8()),
             sound: AtomicU8::new(defaults.sound.as_u8()),
             volume: AtomicU8::new(defaults.volume),
         }
@@ -119,7 +119,7 @@ impl OverlayState {
                 self.scale_pct.store(next, Ordering::SeqCst);
             }
             Command::SetScale(pct) => self.scale_pct.store(pct.clamp(50, 200), Ordering::SeqCst),
-            Command::SetHand(style) => self.hand_style.store(style.0, Ordering::SeqCst),
+            Command::SetHand(style) => self.hand_style.store(style.as_u8(), Ordering::SeqCst),
             Command::SetSound(preset) => self.sound.store(preset.as_u8(), Ordering::SeqCst),
             Command::SetVolume(volume) => {
                 self.volume.store(volume.clamp(0, 100), Ordering::SeqCst);
@@ -128,7 +128,7 @@ impl OverlayState {
                 self.scale_pct
                     .store(settings.scale_pct.clamp(50, 200), Ordering::SeqCst);
                 self.hand_style
-                    .store(settings.hand_style.0, Ordering::SeqCst);
+                    .store(settings.hand_style.as_u8(), Ordering::SeqCst);
                 self.sound.store(settings.sound.as_u8(), Ordering::SeqCst);
                 self.volume
                     .store(settings.volume.clamp(0, 100), Ordering::SeqCst);
@@ -203,7 +203,7 @@ mod tests {
             Command::TogglePresentation,
             Command::SettingsLoaded(Settings {
                 scale_pct: 175,
-                hand_style: HandStyle(1),
+                hand_style: HandStyle::GINGERBREAD,
                 sound: SoundPreset::Pop,
                 volume: 25,
             }),
@@ -211,7 +211,7 @@ mod tests {
         assert!(snapshot.active);
         assert!(snapshot.presentation);
         assert_eq!(snapshot.scale_pct, 175);
-        assert_eq!(snapshot.hand_style, HandStyle(1));
+        assert_eq!(snapshot.hand_style, HandStyle::GINGERBREAD);
         assert_eq!(snapshot.sound, SoundPreset::Pop);
         assert_eq!(snapshot.volume, 25);
     }
@@ -220,14 +220,14 @@ mod tests {
     fn settings_snapshot_matches_the_persisted_values() {
         let state = OverlayState::new();
         state.apply(Command::SetScale(135));
-        state.apply(Command::SetHand(HandStyle(1)));
+        state.apply(Command::SetHand(HandStyle::GINGERBREAD));
         state.apply(Command::SetSound(SoundPreset::Click));
         state.apply(Command::SetVolume(0));
         assert_eq!(
             state.settings(),
             Settings {
                 scale_pct: 135,
-                hand_style: HandStyle(1),
+                hand_style: HandStyle::GINGERBREAD,
                 sound: SoundPreset::Click,
                 volume: 0,
             }
@@ -236,11 +236,11 @@ mod tests {
 
     #[test]
     fn hand_style_selection_applies() {
-        let snapshot = apply(&[Command::SetHand(HandStyle(1))]);
-        assert_eq!(snapshot.hand_style, HandStyle(1));
+        let snapshot = apply(&[Command::SetHand(HandStyle::GINGERBREAD)]);
+        assert_eq!(snapshot.hand_style, HandStyle::GINGERBREAD);
         assert_eq!(
-            apply(&[Command::SetHand(HandStyle(9))]).hand_style,
-            HandStyle(0)
+            apply(&[Command::SetHand(HandStyle::from_index(9))]).hand_style,
+            HandStyle::CLASSIC
         );
     }
 }

@@ -60,7 +60,7 @@ impl AudioEngine {
                 noise_gain: 1.0,
                 noise_decay: 190.0,
             }),
-            generate_jingle_bell(),
+            encode_wav(&generate_jingle_bell_pcm()),
         ];
 
         match OutputStream::try_default() {
@@ -113,6 +113,11 @@ struct SoundParams {
     noise_decay: f32,
 }
 
+fn next_noise(state: &mut u32) -> f32 {
+    *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    ((*state >> 8) as f32 / 8_388_608.0) - 1.0
+}
+
 fn generate_wav(params: &SoundParams) -> Vec<u8> {
     let sample_rate = 44100u32;
     let num_samples = (sample_rate as f32 * params.duration) as usize;
@@ -127,11 +132,7 @@ fn generate_wav(params: &SoundParams) -> Vec<u8> {
         let noise = if params.noise_gain == 0.0 {
             0.0
         } else {
-            noise_state = noise_state
-                .wrapping_mul(1_664_525)
-                .wrapping_add(1_013_904_223);
-            let white = ((noise_state >> 8) as f32 / 8_388_608.0) - 1.0;
-            white * params.noise_gain * (-t * params.noise_decay).exp()
+            next_noise(&mut noise_state) * params.noise_gain * (-t * params.noise_decay).exp()
         };
         let signal =
             ((2.0 * std::f32::consts::PI * freq * t).sin() + click_transient) * env + noise;
@@ -158,10 +159,7 @@ fn generate_jingle_bell_pcm() -> Vec<i16> {
 
     for i in 0..num_samples {
         let t = i as f32 / sample_rate as f32;
-        noise_state = noise_state
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
-        let white = ((noise_state >> 8) as f32 / 8_388_608.0) - 1.0;
+        let white = next_noise(&mut noise_state);
         let mut signal = 0.0f32;
 
         for &(at, level) in &strikes {
@@ -181,10 +179,6 @@ fn generate_jingle_bell_pcm() -> Vec<i16> {
         pcm.push(sample);
     }
     pcm
-}
-
-fn generate_jingle_bell() -> Vec<u8> {
-    encode_wav(&generate_jingle_bell_pcm())
 }
 
 fn encode_wav(pcm: &[i16]) -> Vec<u8> {

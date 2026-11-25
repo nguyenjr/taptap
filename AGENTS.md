@@ -17,13 +17,13 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 ## Architecture
 
 - `src/main.rs` — entrypoint and all Win32: layered window, low-level mouse hook, tray menu, render thread, message loop, single-instance mutex `Local\TapTap_SingleInstance_Mutex` (second launch exits silently).
-- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Size, Click Sound and Volume; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
+- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
 - `src/platform.rs` — `Platform` trait and `Event`/`Effect` enums are the seam; test-only `FakePlatform` lets logic be tested without Windows. State changes cross it as one `StateChanged` effect, not per-value writes.
 - `src/app.rs` — maps events to commands and emits side effects; holds no state of its own. Put event routing here, state rules in `overlay_state.rs`, Win32 fan-out in `main.rs`.
 - Hotkeys: `HOTKEY_BINDINGS` in `main.rs` holds IDs 1–5, `Ctrl+Shift`, `MOD_NOREPEAT` and raw VK codes. A new/changed hotkey means editing that table, `Hotkey` in `platform.rs`, its `app.rs` mapping, and the README table.
-- Tray menu: `MENU_BINDINGS` in `main.rs` is the single source for item IDs, labels and `MenuAction`s; `menu_action` is a table lookup with a direct unit test. Add menu items there.
-- `src/hand_art.rs` is shared SVG markup: `#[path]`-included by `build.rs` (generates the .ico), rendered for the runtime hand (`physics_render.rs`) and tray icon (`main.rs`). Edit it and all three change; no image assets. `HAND_STYLES` is the append-only registry (id, label, markup function) for Classic/Gingerbread and future Hands — add a row, never reorder.
-- `src/audio.rs` synthesizes all four WAVs in memory at startup (rodio, `wav` feature only); no audio assets.
+- Tray menu: `menu_bindings()` in `main.rs` is the single source for item IDs, labels and `MenuAction`s (hand rows come from `HAND_STYLES`); `menu_action` is a table lookup with a direct unit test. Add menu items there.
+- `src/hand_art.rs` is shared SVG markup: `#[path]`-included by `build.rs` (generates the .ico), rendered for the runtime hand (`physics_render.rs`) and tray icon (`main.rs`). Edit it and all three change; no image assets. `HAND_STYLES` is the append-only registry (id, menu id, label, markup, silhouette, arm spec) for Classic/Gingerbread and future Hands — add a row, never reorder.
+- `src/audio.rs` synthesizes all five WAVs in memory at startup (rodio, `wav` feature only); no audio assets.
 - `src/cursor.rs` swaps all 13 system cursors for a blank cursor and restores them on shutdown, panic, Ctrl-C and Ctrl-close — don't leave cursors hidden while debugging.
 - Settings: `%APPDATA%\taptap\settings.txt` (or `settings.txt` in cwd when `APPDATA` unset), `key=value` for `scale_pct`/`hand_style`/`sound`/`volume`; saved via temp file + rename. Scale clamps to 50–200, volume to 0–100.
 

@@ -5,9 +5,13 @@ const GINGERBREAD_PATH: &str = "M 76 108 L 76 34 C 76 14, 104 14, 104 34 L 104 8
 const CUFF_SQUIGGLE: &str = "M 86 174 Q 93 165, 100 174 T 114 174 T 128 174 T 142 174 T 150 172";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HandStyle(pub u8);
+pub struct HandStyle(u8);
 
 impl HandStyle {
+    pub const CLASSIC: Self = Self(0);
+    #[cfg(test)]
+    pub const GINGERBREAD: Self = Self(1);
+
     pub fn from_index(index: u8) -> Self {
         if (index as usize) < HAND_STYLES.len() {
             Self(index)
@@ -23,36 +27,81 @@ impl HandStyle {
             .map(|index| Self(index as u8))
     }
 
-    pub fn index(self) -> usize {
-        self.0 as usize
+    pub fn as_u8(self) -> u8 {
+        Self::from_index(self.0).0
+    }
+
+    pub fn as_index(self) -> usize {
+        self.as_u8() as usize
     }
 
     pub fn binding(self) -> &'static HandStyleBinding {
-        &HAND_STYLES[self.index()]
+        &HAND_STYLES[self.as_index()]
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HandArtParams {
+    pub outline: f32,
+    pub knuckle: f32,
+    pub finger: f32,
+}
+
+impl HandArtParams {
+    pub const fn new(outline: f32, knuckle: f32, finger: f32) -> Self {
+        Self {
+            outline,
+            knuckle,
+            finger,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ArmSpec {
+    pub gradient_top: &'static str,
+    pub gradient_bottom: &'static str,
+    pub path: &'static str,
 }
 
 pub struct HandStyleBinding {
     pub id: &'static str,
+    pub menu_id: &'static str,
     pub label: &'static str,
-    pub markup: fn(f32, f32, f32) -> String,
+    pub markup: fn(HandArtParams) -> String,
+    pub silhouette: fn() -> String,
+    pub arm: ArmSpec,
 }
 
 pub const HAND_STYLES: &[HandStyleBinding] = &[
     HandStyleBinding {
         id: "classic",
+        menu_id: "hand-classic",
         label: "Classic",
         markup: glove_markup,
+        silhouette: glove_silhouette,
+        arm: ArmSpec {
+            gradient_top: "185",
+            gradient_bottom: "295",
+            path: "M 88 182 L 146 182 L 154 295 L 80 295 Z",
+        },
     },
     HandStyleBinding {
         id: "gingerbread",
+        menu_id: "hand-gingerbread",
         label: "Gingerbread",
         markup: gingerbread_markup,
+        silhouette: gingerbread_silhouette,
+        arm: ArmSpec {
+            gradient_top: "194",
+            gradient_bottom: "302",
+            path: "M 88 192 L 146 192 L 154 302 L 80 302 Z",
+        },
     },
 ];
 
-pub fn hand_markup(style: HandStyle, outline: f32, knuckle: f32, finger: f32) -> String {
-    (style.binding().markup)(outline, knuckle, finger)
+pub fn hand_markup(style: HandStyle, params: HandArtParams) -> String {
+    (style.binding().markup)(params)
 }
 
 fn finger_lines(finger: f32, stroke: &str) -> String {
@@ -66,11 +115,13 @@ fn finger_lines(finger: f32, stroke: &str) -> String {
         .collect::<String>()
 }
 
-pub fn glove_markup(outline: f32, knuckle: f32, finger: f32) -> String {
+pub fn glove_markup(params: HandArtParams) -> String {
     let path = GLOVE_PATH;
     let left = KNUCKLE_LEFT;
     let right = KNUCKLE_RIGHT;
-    let fingers = finger_lines(finger, "#000000");
+    let fingers = finger_lines(params.finger, "#000000");
+    let outline = params.outline;
+    let knuckle = params.knuckle;
     format!(
         r##"<path d="{path}" fill="#FFFFFF" stroke="#000000" stroke-width="{outline}" stroke-linejoin="round" stroke-linecap="round" />
 <path d="{left}" fill="none" stroke="#000000" stroke-width="{knuckle}" stroke-linecap="round" />
@@ -80,10 +131,10 @@ pub fn glove_markup(outline: f32, knuckle: f32, finger: f32) -> String {
     )
 }
 
-pub fn gingerbread_markup(outline: f32, _knuckle: f32, _finger: f32) -> String {
+pub fn gingerbread_markup(params: HandArtParams) -> String {
     let path = GINGERBREAD_PATH;
     let squiggle = CUFF_SQUIGGLE;
-    let ink = outline + 8.5;
+    let ink = params.outline + 8.5;
     format!(
         r##"<defs><clipPath id="cookie-clip"><path d="{path}" /></clipPath></defs>
 <path d="{path}" fill="#C19A6B" stroke="#000000" stroke-width="{ink}" stroke-linejoin="round" stroke-linecap="round" />
@@ -110,34 +161,45 @@ pub fn gingerbread_silhouette() -> String {
     )
 }
 
-pub fn hand_silhouette(style: HandStyle) -> String {
-    match style {
-        HandStyle(0) => glove_silhouette(),
-        _ => gingerbread_silhouette(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{gingerbread_markup, glove_markup, hand_markup, HandStyle, HAND_STYLES};
+    use super::{
+        gingerbread_markup, glove_markup, hand_markup, HandArtParams, HandStyle, HAND_STYLES,
+    };
 
     #[test]
     fn registry_ids_are_unique_and_append_only() {
         let ids: Vec<&str> = HAND_STYLES.iter().map(|binding| binding.id).collect();
         assert_eq!(ids, vec!["classic", "gingerbread"]);
-        assert_eq!(HandStyle::from_id("gingerbread"), Some(HandStyle(1)));
+        assert_eq!(
+            HandStyle::from_id("gingerbread"),
+            Some(HandStyle::GINGERBREAD)
+        );
         assert_eq!(HandStyle::from_id("unknown"), None);
         assert_eq!(HandStyle::from_index(9), HandStyle::default());
     }
 
     #[test]
-    fn gingerbread_uses_the_same_geometry() {
-        let classic = glove_markup(8.5, 6.5, 6.0);
-        let gingerbread = gingerbread_markup(8.5, 6.5, 6.0);
-        let path = "M 76 108 L 76 34";
-        assert!(classic.contains(path));
-        assert!(gingerbread.contains(path));
+    fn every_style_owns_its_art_and_arm() {
+        for style in HAND_STYLES {
+            assert!(!style.label.is_empty());
+            assert!(!(style.silhouette)().is_empty());
+            assert!(!style.arm.path.is_empty());
+        }
+        assert_eq!(HandStyle::CLASSIC.binding().id, "classic");
+        assert_eq!(HandStyle::GINGERBREAD.binding().id, "gingerbread");
+    }
+
+    #[test]
+    fn gingerbread_keeps_the_fingertip_and_ink_look() {
+        let params = HandArtParams::new(8.5, 6.5, 6.0);
+        let classic = glove_markup(params);
+        let gingerbread = gingerbread_markup(params);
+        let fingertip = "M 76 108 L 76 34";
+        assert!(classic.contains(fingertip));
+        assert!(gingerbread.contains(fingertip));
         assert!(gingerbread.contains("#C19A6B"));
+        assert!(gingerbread.contains("stroke=\"#000000\""));
         assert!(gingerbread.contains("stroke=\"#FFFFFF\""));
         assert_eq!(gingerbread.matches("<circle").count(), 3);
         assert!(gingerbread.contains("clip-path=\"url(#cookie-clip)\""));
@@ -146,9 +208,14 @@ mod tests {
 
     #[test]
     fn hand_markup_dispatches_to_the_registered_function() {
+        let params = HandArtParams::new(6.5, 5.0, 5.0);
         assert_eq!(
-            hand_markup(HandStyle(0), 6.5, 5.0, 5.0),
-            glove_markup(6.5, 5.0, 5.0)
+            hand_markup(HandStyle::CLASSIC, params),
+            glove_markup(params)
+        );
+        assert_eq!(
+            hand_markup(HandStyle::GINGERBREAD, params),
+            gingerbread_markup(params)
         );
     }
 }
