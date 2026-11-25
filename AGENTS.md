@@ -20,6 +20,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 - `src/platform.rs` — `Platform` trait and `Event`/`Effect` enums are the seam; test-only `FakePlatform` lets logic be tested without Windows. State changes cross it as one `StateChanged` effect, not per-value writes.
 - `src/app.rs` — maps events to commands and emits side effects; holds no state of its own. Put event routing here, state rules in `overlay_state.rs`, Win32 fan-out in `main.rs`.
 - Hotkeys: `HOTKEY_BINDINGS` in `main.rs` holds IDs 1–5, `Ctrl+Shift`, `MOD_NOREPEAT` and raw VK codes. A new/changed hotkey means editing that table, `Hotkey` in `platform.rs`, its `app.rs` mapping, and the README table.
+- Tray menu: `MENU_BINDINGS` in `main.rs` is the single source for item IDs, labels and `MenuAction`s; `menu_action` is a table lookup with a direct unit test. Add menu items there.
 - `src/hand_art.rs` is shared SVG markup: `#[path]`-included by `build.rs` (generates the .ico), rendered for the runtime hand (`physics_render.rs`) and tray icon (`main.rs`). Edit it and all three change; no image assets.
 - `src/audio.rs` synthesizes all four WAVs in memory at startup (rodio, `wav` feature only); no audio assets.
 - `src/cursor.rs` swaps all 13 system cursors for a blank cursor and restores them on shutdown, panic, Ctrl-C and Ctrl-close — don't leave cursors hidden while debugging.
@@ -27,6 +28,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 
 ## Agent workflows
 
+- Never push directly to `main`: work on a feature branch, push that branch, and merge it into `main`.
 - Issues/specs live under `.scratch/<feature-slug>/`: `spec.md` plus one `issues/NN-slug.md` per ticket, numbered from 01. `.scratch/` is gitignored — these files are local-only. See `docs/agents/issue-tracker.md`.
 - Triage `Status:` roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 - Before domain work, read `GLOSSARY.md`, `GLOSSARY-MAP.md` (if present) and relevant `docs/adr/`; if absent, proceed silently. See `docs/agents/domain.md`.
