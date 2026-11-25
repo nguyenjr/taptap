@@ -1,3 +1,5 @@
+use crate::settings::{Settings, SoundPreset};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hotkey {
     ToggleActive,
@@ -11,10 +13,11 @@ pub enum Hotkey {
 pub enum MenuAction {
     ToggleActive,
     TogglePresentation,
-    ToggleMute,
     ScaleUp,
     ScaleDown,
     SetScale(u32),
+    SetSound(SoundPreset),
+    SetVolume(u8),
     Quit,
 }
 
@@ -34,6 +37,9 @@ pub enum Event {
     RenderFailed(String),
     StartupFailed(String),
     MessageLoopFailed,
+    SettingsLoaded(Settings),
+    SettingsLoadFailed(String),
+    SettingsSaveFailed(String),
     Shutdown,
 }
 
@@ -48,13 +54,16 @@ pub enum Effect {
     RestoreSystemCursors,
     ActiveChanged(bool),
     PresentationChanged(bool),
-    MuteChanged(bool),
     ScaleChanged(u32),
     SuppressClick(bool),
     ShowOverlay,
     HideOverlay,
     PostQuit,
     ReportError(String),
+    LoadSettings,
+    SaveSettings(Settings),
+    SoundChanged(SoundPreset),
+    VolumeChanged(u8),
 }
 
 pub trait Platform {
