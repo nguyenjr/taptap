@@ -1,16 +1,17 @@
 # taptap
 
-Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Requires Windows + stable MSVC toolchain (`winresource` in `build.rs` needs `rc.exe`). No CI, no rustfmt/clippy config, no `tests/`.
+Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Requires Windows + stable MSVC toolchain (`winresource` in `build.rs` needs `rc.exe`). No rustfmt/clippy config, no `tests/`.
 
 ## Commands
 
+- One-time setup: `git config core.hooksPath .githooks` enables `.githooks/pre-push`, which rejects direct pushes to `main`.
 - `cargo build --release` — shippable binary at `target\release\taptap.exe`. Release enables `windows_subsystem = "windows"` (no console), `opt-level="z"`, LTO, strip.
 - `cargo run` / `cargo build` — debug keeps a console. Errors are reported via `eprintln!` (`Effect::ReportError`), so use a debug build to see startup failures.
 - `cargo test` — all tests are inline `#[cfg(test)] mod tests` in `src/*.rs`; there are no integration tests.
   - `cargo test app::tests` — pure state-machine tests via `FakePlatform`; no GUI needed.
   - `cargo test settings::tests` — temp-dir files, safe.
   - `cargo test menu_quit_event_is_delivered_on_the_first_message` (`main.rs`) — real tray/message-loop test; needs a desktop session and posts `WM_QUIT` after 300 ms, so it can hang headless.
-- `cargo fmt` / `cargo clippy` use tool defaults (no config files).
+- `cargo fmt` / `cargo clippy` use tool defaults (no config files); `.github/workflows/checks.yml` runs `fmt --check`, `clippy -D warnings` and `cargo test` minus the desktop-only test.
 
 ## Architecture
 
