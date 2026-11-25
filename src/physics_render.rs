@@ -146,7 +146,11 @@ impl PokeAnimator {
                 angular_vel: rng.gen_range(-1.2..1.2),
                 length_mult,
                 speed_mult: rng.gen_range(0.85..1.20),
-                delay: if is_primary { 0.0 } else { rng.gen_range(0.012..0.032) },
+                delay: if is_primary {
+                    0.0
+                } else {
+                    rng.gen_range(0.012..0.032)
+                },
             });
         }
 
@@ -219,7 +223,8 @@ impl PokeAnimator {
                 let perp_y = dir_x;
 
                 let travel = (12.0 + ease_out * 28.0 * heat_factor * ray.speed_mult) * effect_scale;
-                let base_len = (13.0 + b.heat_at_spawn * 2.6) * ray.length_mult * pop_env * effect_scale;
+                let base_len =
+                    (13.0 + b.heat_at_spawn * 2.6) * ray.length_mult * pop_env * effect_scale;
 
                 if base_len < 1.5 {
                     continue;
@@ -293,7 +298,8 @@ impl PokeAnimator {
                     }
 
                     if let Some(arc_path) = arc_pb.finish() {
-                        let arc_thick = (2.5 + b.heat_at_spawn * 0.25).min(5.5) * arc_pop * effect_scale;
+                        let arc_thick =
+                            (2.5 + b.heat_at_spawn * 0.25).min(5.5) * arc_pop * effect_scale;
 
                         let outline_paint = solid_paint(0, 0, 0, 255);
                         let inner_paint = solid_paint(r_col, g_col, b_col, 255);
@@ -318,7 +324,12 @@ impl PokeAnimator {
         }
     }
 
-    pub fn render_bgra(&mut self, dpi_scale: f32, user_scale: f32, presentation_mode: bool) -> &[u8] {
+    pub fn render_bgra(
+        &mut self,
+        dpi_scale: f32,
+        user_scale: f32,
+        presentation_mode: bool,
+    ) -> &[u8] {
         self.canvas.fill(Color::TRANSPARENT);
 
         let effect_scale = (dpi_scale * user_scale.sqrt()).clamp(0.6, 2.5);
@@ -350,11 +361,9 @@ impl PokeAnimator {
             .draw_pixmap(0, 0, self.hand_pixmap.as_ref(), &paint, transform, None);
 
         if presentation_mode {
-            if let Some(path) = PathBuilder::from_circle(
-                HOTSPOT_X as f32,
-                HOTSPOT_Y as f32,
-                8.0 * effect_scale,
-            ) {
+            if let Some(path) =
+                PathBuilder::from_circle(HOTSPOT_X as f32, HOTSPOT_Y as f32, 8.0 * effect_scale)
+            {
                 let stroke_paint = solid_paint(255, 65, 54, 220);
                 let stroke = Stroke {
                     width: 2.5 * effect_scale,
@@ -366,7 +375,7 @@ impl PokeAnimator {
         }
 
         let data = self.canvas.data_mut();
-        for pixel in data.chunks_exact_mut(4) {
+        for pixel in data.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         self.canvas.data()

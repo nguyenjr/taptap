@@ -52,18 +52,11 @@ pub enum Effect {
     StopRenderThread,
     HideSystemCursors,
     RestoreSystemCursors,
-    ActiveChanged(bool),
-    PresentationChanged(bool),
-    ScaleChanged(u32),
-    SuppressClick(bool),
-    ShowOverlay,
-    HideOverlay,
+    StateChanged,
     PostQuit,
     ReportError(String),
     LoadSettings,
     SaveSettings(Settings),
-    SoundChanged(SoundPreset),
-    VolumeChanged(u8),
 }
 
 pub trait Platform {

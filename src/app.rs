@@ -1,61 +1,20 @@
+use crate::overlay_state::{Command, OverlayState};
 use crate::platform::{Effect, Event, Hotkey, MenuAction, Platform};
-use crate::settings::{Settings, SoundPreset};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AppState {
-    pub active: bool,
-    pub presentation: bool,
-    pub scale_pct: u32,
-    pub sound: SoundPreset,
-    pub volume: u8,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            active: true,
-            presentation: false,
-            scale_pct: 100,
-            sound: SoundPreset::Wood,
-            volume: 100,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Command {
-    ToggleActive,
-    TogglePresentation,
-    ScaleUp,
-    ScaleDown,
-    SetScale(u32),
-    SetSound(SoundPreset),
-    SetVolume(u8),
-    Quit,
-}
+use std::sync::Arc;
 
 pub struct App {
-    state: AppState,
+    state: Arc<OverlayState>,
     quit: bool,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl App {
-    pub fn new() -> Self {
-        Self {
-            state: AppState::default(),
-            quit: false,
-        }
+    pub fn new(state: Arc<OverlayState>) -> Self {
+        Self { state, quit: false }
     }
 
     #[cfg(test)]
-    pub fn state(&self) -> AppState {
-        self.state
+    pub fn state(&self) -> crate::overlay_state::OverlayStateSnapshot {
+        self.state.snapshot()
     }
 
     #[cfg(test)]
@@ -105,16 +64,10 @@ impl App {
                 };
                 self.command(command, platform);
             }
-            Event::MouseButton(_) => {
-                platform.emit(Effect::SuppressClick(self.suppression()));
-            }
+            Event::MouseButton(_) => {}
             Event::SettingsLoaded(settings) => {
-                self.state.scale_pct = settings.scale_pct;
-                self.state.sound = settings.sound;
-                self.state.volume = settings.volume;
-                platform.emit(Effect::ScaleChanged(settings.scale_pct));
-                platform.emit(Effect::SoundChanged(settings.sound));
-                platform.emit(Effect::VolumeChanged(settings.volume));
+                self.state.apply(Command::SettingsLoaded(settings));
+                platform.emit(Effect::StateChanged);
             }
             Event::SettingsLoadFailed(message) | Event::SettingsSaveFailed(message) => {
                 platform.emit(Effect::ReportError(message));
@@ -132,64 +85,24 @@ impl App {
         }
     }
 
-    fn suppression(&self) -> bool {
-        self.state.active && self.state.presentation
-    }
-
     fn command(&mut self, command: Command, platform: &mut dyn Platform) {
-        match command {
-            Command::ToggleActive => {
-                self.state.active = !self.state.active;
-                platform.emit(Effect::ActiveChanged(self.state.active));
-                platform.emit(Effect::SuppressClick(self.suppression()));
-                if self.state.active {
-                    platform.emit(Effect::HideSystemCursors);
-                    platform.emit(Effect::ShowOverlay);
-                } else {
-                    platform.emit(Effect::RestoreSystemCursors);
-                    platform.emit(Effect::HideOverlay);
-                }
-            }
-            Command::TogglePresentation => {
-                self.state.presentation = !self.state.presentation;
-                platform.emit(Effect::PresentationChanged(self.state.presentation));
-                platform.emit(Effect::SuppressClick(self.suppression()));
-            }
-            Command::ScaleUp | Command::ScaleDown => {
-                let delta = match command {
-                    Command::ScaleUp => 10,
-                    _ => -10,
-                };
-                let next = (self.state.scale_pct as i32 + delta).clamp(50, 200) as u32;
-                self.state.scale_pct = next;
-                platform.emit(Effect::ScaleChanged(next));
-                platform.emit(Effect::SaveSettings(self.settings()));
-            }
-            Command::SetScale(pct) => {
-                self.state.scale_pct = pct;
-                platform.emit(Effect::ScaleChanged(pct));
-                platform.emit(Effect::SaveSettings(self.settings()));
-            }
-            Command::SetSound(preset) => {
-                self.state.sound = preset;
-                platform.emit(Effect::SoundChanged(preset));
-                platform.emit(Effect::SaveSettings(self.settings()));
-            }
-            Command::SetVolume(volume) => {
-                let next = volume.clamp(0, 100);
-                self.state.volume = next;
-                platform.emit(Effect::VolumeChanged(next));
-                platform.emit(Effect::SaveSettings(self.settings()));
-            }
-            Command::Quit => self.shutdown(platform, true),
+        if matches!(command, Command::Quit) {
+            self.shutdown(platform, true);
+            return;
         }
-    }
 
-    fn settings(&self) -> Settings {
-        Settings {
-            scale_pct: self.state.scale_pct,
-            sound: self.state.sound,
-            volume: self.state.volume,
+        let persists = matches!(
+            command,
+            Command::ScaleUp
+                | Command::ScaleDown
+                | Command::SetScale(_)
+                | Command::SetSound(_)
+                | Command::SetVolume(_)
+        );
+        self.state.apply(command);
+        platform.emit(Effect::StateChanged);
+        if persists {
+            platform.emit(Effect::SaveSettings(self.state.settings()));
         }
     }
 
@@ -207,21 +120,16 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
+    use crate::overlay_state::OverlayState;
     use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
     use crate::settings::{Settings, SoundPreset};
+    use std::sync::Arc;
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
         let mut platform = FakePlatform::new(events);
-        let mut app = App::new();
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.run(&mut platform);
         (app, platform.effects)
-    }
-
-    fn last_suppression(effects: &[Effect]) -> Option<bool> {
-        effects.iter().rev().find_map(|effect| match effect {
-            Effect::SuppressClick(suppress) => Some(*suppress),
-            _ => None,
-        })
     }
 
     #[test]
@@ -249,9 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn settings_loaded_applies_through_existing_effects_without_saving() {
-        let mut app = App::new();
+    fn settings_loaded_applies_without_saving() {
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(
             Event::SettingsLoaded(Settings {
                 scale_pct: 175,
@@ -263,31 +171,25 @@ mod tests {
         assert_eq!(app.state().scale_pct, 175);
         assert_eq!(app.state().sound, SoundPreset::Bell);
         assert_eq!(app.state().volume, 25);
-        assert_eq!(
-            platform.effects,
-            vec![
-                Effect::ScaleChanged(175),
-                Effect::SoundChanged(SoundPreset::Bell),
-                Effect::VolumeChanged(25),
-            ]
-        );
+        assert_eq!(platform.effects, vec![Effect::StateChanged]);
     }
 
     #[test]
     fn scale_changes_save_a_full_snapshot() {
-        let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(Event::Hotkey(Hotkey::ScaleUp), &mut platform);
         assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
             scale_pct: 110,
             ..Default::default()
         })));
+        assert!(platform.effects.contains(&Effect::StateChanged));
     }
 
     #[test]
-    fn sound_and_volume_selections_emit_effects_and_save() {
-        let mut app = App::new();
+    fn sound_and_volume_selections_change_state_and_save() {
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(
             Event::Menu(MenuAction::SetSound(SoundPreset::Pop)),
             &mut platform,
@@ -295,10 +197,14 @@ mod tests {
         app.handle(Event::Menu(MenuAction::SetVolume(250)), &mut platform);
         assert_eq!(app.state().sound, SoundPreset::Pop);
         assert_eq!(app.state().volume, 100);
-        assert!(platform
-            .effects
-            .contains(&Effect::SoundChanged(SoundPreset::Pop)));
-        assert!(platform.effects.contains(&Effect::VolumeChanged(100)));
+        assert_eq!(
+            platform
+                .effects
+                .iter()
+                .filter(|effect| **effect == Effect::StateChanged)
+                .count(),
+            2
+        );
         assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
             sound: SoundPreset::Pop,
             volume: 100,
@@ -308,8 +214,8 @@ mod tests {
 
     #[test]
     fn settings_failures_are_reported_without_shutdown() {
-        let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(
             Event::SettingsLoadFailed("bad file".to_string()),
             &mut platform,
@@ -320,8 +226,8 @@ mod tests {
             vec![Effect::ReportError("bad file".to_string())]
         );
 
-        let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(
             Event::SettingsSaveFailed("save failed".to_string()),
             &mut platform,
@@ -335,15 +241,16 @@ mod tests {
 
     #[test]
     fn hotkey_and_menu_toggle_active_identically() {
-        let by_hotkey = run(vec![Event::Hotkey(Hotkey::ToggleActive)]).1;
-        let by_menu = run(vec![Event::Menu(MenuAction::ToggleActive)]).1;
-        assert_eq!(by_hotkey, by_menu);
+        let (by_hotkey, hotkey_effects) = run(vec![Event::Hotkey(Hotkey::ToggleActive)]);
+        let (by_menu, menu_effects) = run(vec![Event::Menu(MenuAction::ToggleActive)]);
+        assert_eq!(by_hotkey.state(), by_menu.state());
+        assert_eq!(hotkey_effects, menu_effects);
     }
 
     #[test]
     fn scale_steps_clamp_and_presets_apply() {
-        let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         for _ in 0..20 {
             app.handle(Event::Hotkey(Hotkey::ScaleDown), &mut platform);
         }
@@ -358,8 +265,8 @@ mod tests {
 
     #[test]
     fn presentation_toggles_from_both_sources() {
-        let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
         app.handle(Event::Hotkey(Hotkey::TogglePresentation), &mut platform);
         assert!(app.state().presentation);
         app.handle(Event::Menu(MenuAction::TogglePresentation), &mut platform);
@@ -400,18 +307,18 @@ mod tests {
 
     #[test]
     fn presentation_suppresses_clicks_only_while_active() {
-        let (_, effects) = run(vec![
+        let (app, _) = run(vec![
             Event::Menu(MenuAction::TogglePresentation),
             Event::MouseButton(MouseButtonEvent::LeftDown),
         ]);
-        assert_eq!(last_suppression(&effects), Some(true));
+        assert!(app.state().suppresses_clicks());
 
-        let (_, effects) = run(vec![
+        let (app, _) = run(vec![
             Event::Menu(MenuAction::TogglePresentation),
             Event::Hotkey(Hotkey::ToggleActive),
             Event::MouseButton(MouseButtonEvent::Right),
         ]);
-        assert_eq!(last_suppression(&effects), Some(false));
+        assert!(!app.state().suppresses_clicks());
     }
 
     #[test]
@@ -428,7 +335,7 @@ mod tests {
             Event::Hotkey(Hotkey::Quit),
         ]);
         assert!(app.is_quit());
-        assert_eq!(last_suppression(&effects), Some(true));
+        assert!(app.state().suppresses_clicks());
         assert!(effects.contains(&Effect::PostQuit));
         assert!(effects.contains(&Effect::StopRenderThread));
         assert!(effects.contains(&Effect::RemoveMouseHook));

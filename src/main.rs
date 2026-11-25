@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod cursor;
 mod hand_art;
+mod overlay_state;
 mod physics_render;
 mod platform;
 mod settings;
@@ -13,12 +14,13 @@ use app::App;
 use audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use overlay_state::{OverlayState, OverlayStateSnapshot};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
 use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
 use resvg::usvg::{Options, Tree};
 use settings::{Settings, SoundPreset};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -31,8 +33,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromPoint,
-    ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER,
-    BLENDFUNCTION, DIB_RGB_COLORS, HDC, HBITMAP, HGDIOBJ, MONITOR_DEFAULTTONEAREST,
+    ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -52,44 +54,42 @@ enum InputEvent {
     RightEvent,
 }
 
-struct RuntimeState {
-    active: AtomicBool,
-    presentation: AtomicBool,
+struct HookContext {
+    state: Arc<OverlayState>,
     running: AtomicBool,
-    scale_pct: AtomicU32,
-    sound_preset: AtomicU8,
-    volume: AtomicU8,
     mouse_x: AtomicI32,
     mouse_y: AtomicI32,
-    suppress_click: AtomicBool,
     input_tx: Sender<InputEvent>,
     event_tx: Sender<Event>,
     hwnd_raw: isize,
 }
 
-static HOOK_STATE: OnceLock<Arc<RuntimeState>> = OnceLock::new();
+static HOOK_STATE: OnceLock<Arc<HookContext>> = OnceLock::new();
 
-impl RuntimeState {
+impl HookContext {
     fn new(
+        state: Arc<OverlayState>,
         input_tx: Sender<InputEvent>,
         event_tx: Sender<Event>,
         hwnd: HWND,
         initial_cursor: POINT,
     ) -> Self {
         Self {
-            active: AtomicBool::new(true),
-            presentation: AtomicBool::new(false),
+            state,
             running: AtomicBool::new(true),
-            scale_pct: AtomicU32::new(100),
-            sound_preset: AtomicU8::new(SoundPreset::Wood.as_u8()),
-            volume: AtomicU8::new(100),
             mouse_x: AtomicI32::new(initial_cursor.x),
             mouse_y: AtomicI32::new(initial_cursor.y),
-            suppress_click: AtomicBool::new(false),
             input_tx,
             event_tx,
             hwnd_raw: hwnd.0 as isize,
         }
+    }
+
+    fn mouse_position(&self) -> (i32, i32) {
+        (
+            self.mouse_x.load(Ordering::Relaxed),
+            self.mouse_y.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -179,12 +179,12 @@ unsafe extern "system" fn wnd_proc(
 
 unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
-        let Some(state) = HOOK_STATE.get() else {
+        let Some(ctx) = HOOK_STATE.get() else {
             return CallNextHookEx(None, code, wparam, lparam);
         };
         let hook_struct = *(lparam.0 as *const MSLLHOOKSTRUCT);
-        state.mouse_x.store(hook_struct.pt.x, Ordering::Relaxed);
-        state.mouse_y.store(hook_struct.pt.y, Ordering::Relaxed);
+        ctx.mouse_x.store(hook_struct.pt.x, Ordering::Relaxed);
+        ctx.mouse_y.store(hook_struct.pt.y, Ordering::Relaxed);
 
         let msg = wparam.0 as u32;
         let button = if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK {
@@ -198,20 +198,20 @@ unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPA
         };
 
         if let Some(button) = button {
-            if state.active.load(Ordering::Relaxed) {
+            if ctx.state.snapshot().active {
                 let animation = match button {
                     MouseButtonEvent::LeftDown => InputEvent::LeftDown,
                     MouseButtonEvent::LeftUp => InputEvent::LeftUp,
                     MouseButtonEvent::Right => InputEvent::RightEvent,
                 };
-                let _ = state.input_tx.try_send(animation);
+                let _ = ctx.input_tx.try_send(animation);
             }
 
-            let _ = state.event_tx.try_send(Event::MouseButton(button));
+            let _ = ctx.event_tx.try_send(Event::MouseButton(button));
             unsafe {
-                let _ = PostMessageW(HWND(state.hwnd_raw as *mut _), WM_APP, WPARAM(0), LPARAM(0));
+                let _ = PostMessageW(HWND(ctx.hwnd_raw as *mut _), WM_APP, WPARAM(0), LPARAM(0));
             }
-            if state.suppress_click.load(Ordering::Relaxed) {
+            if ctx.state.suppresses_clicks() {
                 return LRESULT(1);
             }
         }
@@ -254,7 +254,7 @@ fn spawn_render_thread(
     hwnd_raw: isize,
     rx: Receiver<InputEvent>,
     error_tx: Sender<String>,
-    state: Arc<RuntimeState>,
+    ctx: Arc<HookContext>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let hwnd = HWND(hwnd_raw as *mut _);
@@ -327,10 +327,9 @@ fn spawn_render_thread(
             };
 
             let mut last_tick = Instant::now();
-            let mut was_visible = true;
             let mut frame_count: u32 = 0;
 
-            while state.running.load(Ordering::Relaxed) {
+            while ctx.running.load(Ordering::Relaxed) {
                 let now = Instant::now();
                 let dt = (now - last_tick).as_secs_f32().min(0.05);
                 last_tick = now;
@@ -341,10 +340,8 @@ fn spawn_render_thread(
                     match ev {
                         InputEvent::LeftDown => {
                             animator.trigger_click(true);
-                            let preset =
-                                SoundPreset::from_u8(state.sound_preset.load(Ordering::Relaxed));
-                            let volume = state.volume.load(Ordering::Relaxed);
-                            audio.play_poke(animator.combo_heat, preset, volume);
+                            let snapshot = ctx.state.snapshot();
+                            audio.play_poke(animator.combo_heat, snapshot.sound, snapshot.volume);
                             force_topmost = true;
                         }
                         InputEvent::LeftUp => {
@@ -357,21 +354,14 @@ fn spawn_render_thread(
                     }
                 }
 
-                if !state.active.load(Ordering::Relaxed) {
-                    if was_visible {
-                        let _ = ShowWindow(hwnd, SW_HIDE);
-                        was_visible = false;
-                    }
+                let snapshot = ctx.state.snapshot();
+                if !snapshot.active {
                     std::thread::sleep(Duration::from_millis(16));
                     continue;
-                } else if !was_visible {
-                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    was_visible = true;
-                    force_topmost = true;
                 }
 
                 frame_count = frame_count.wrapping_add(1);
-                if force_topmost || frame_count % 10 == 0 {
+                if force_topmost || frame_count.is_multiple_of(10) {
                     let _ = SetWindowPos(
                         hwnd,
                         HWND_TOPMOST,
@@ -383,20 +373,15 @@ fn spawn_render_thread(
                     );
                 }
 
-                let mx = state.mouse_x.load(Ordering::Relaxed);
-                let my = state.mouse_y.load(Ordering::Relaxed);
+                let (mx, my) = ctx.mouse_position();
                 let dpi_scale = query_monitor_dpi_scale(mx, my);
-                let user_scale = state.scale_pct.load(Ordering::Relaxed) as f32 / 100.0;
-                let pres_mode = state.presentation.load(Ordering::Relaxed);
+                let user_scale = snapshot.scale_pct as f32 / 100.0;
+                let pres_mode = snapshot.presentation;
 
                 animator.step(dt, user_scale);
                 let pixels = animator.render_bgra(dpi_scale, user_scale, pres_mode);
 
-                std::ptr::copy_nonoverlapping(
-                    pixels.as_ptr(),
-                    bits_ptr as *mut u8,
-                    pixels.len(),
-                );
+                std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits_ptr as *mut u8, pixels.len());
 
                 let dst_pt = POINT {
                     x: mx - HOTSPOT_X,
@@ -440,21 +425,17 @@ struct TrayControls {
 }
 
 impl TrayControls {
-    fn sync_size_checks(&self, active_pct: u32) {
+    fn sync_all(&self, snapshot: OverlayStateSnapshot) {
+        self.item_active.set_checked(snapshot.active);
+        self.item_pres.set_checked(snapshot.presentation);
         for (pct, item) in &self.size_items {
-            item.set_checked(*pct == active_pct);
+            item.set_checked(*pct == snapshot.scale_pct);
         }
-    }
-
-    fn sync_sound_checks(&self, active: SoundPreset) {
         for (preset, item) in &self.sound_items {
-            item.set_checked(*preset == active);
+            item.set_checked(*preset == snapshot.sound);
         }
-    }
-
-    fn sync_volume_checks(&self, active: u8) {
         for (level, item) in &self.volume_items {
-            item.set_checked(*level == active);
+            item.set_checked(*level == snapshot.volume);
         }
     }
 }
@@ -614,7 +595,8 @@ struct Win32Platform {
     controls: TrayControls,
     msg: MSG,
     pending: VecDeque<Event>,
-    state: Arc<RuntimeState>,
+    state: Arc<OverlayState>,
+    hook_ctx: Arc<HookContext>,
     input_rx: Receiver<InputEvent>,
     event_rx: Receiver<Event>,
     error_rx: Receiver<String>,
@@ -624,12 +606,23 @@ struct Win32Platform {
 }
 
 impl Win32Platform {
-    fn new(hwnd: HWND, controls: TrayControls, initial_cursor: POINT) -> Self {
+    fn new(
+        hwnd: HWND,
+        controls: TrayControls,
+        initial_cursor: POINT,
+        state: Arc<OverlayState>,
+    ) -> Self {
         let (input_tx, input_rx) = unbounded();
         let (event_tx, event_rx) = unbounded::<Event>();
         let (error_tx, error_rx) = unbounded::<String>();
-        let state = Arc::new(RuntimeState::new(input_tx, event_tx, hwnd, initial_cursor));
-        let _ = HOOK_STATE.set(state.clone());
+        let hook_ctx = Arc::new(HookContext::new(
+            state.clone(),
+            input_tx,
+            event_tx,
+            hwnd,
+            initial_cursor,
+        ));
+        let _ = HOOK_STATE.set(hook_ctx.clone());
 
         Self {
             hwnd,
@@ -637,6 +630,7 @@ impl Win32Platform {
             msg: MSG::default(),
             pending: VecDeque::new(),
             state,
+            hook_ctx,
             input_rx,
             event_rx,
             error_rx,
@@ -706,9 +700,9 @@ impl Platform for Win32Platform {
                 let instance = GetModuleHandleW(None).expect("Failed to get module handle");
                 match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0) {
                     Ok(hook) => self.hook = Some(HookGuard(hook)),
-                    Err(error) => self
-                        .pending
-                        .push_back(Event::StartupFailed(format!("Failed to install mouse hook: {error:?}"))),
+                    Err(error) => self.pending.push_back(Event::StartupFailed(format!(
+                        "Failed to install mouse hook: {error:?}"
+                    ))),
                 }
             },
             Effect::RemoveMouseHook => self.hook = None,
@@ -717,49 +711,31 @@ impl Platform for Win32Platform {
                     self.hwnd.0 as isize,
                     self.input_rx.clone(),
                     self.error_tx.clone(),
-                    self.state.clone(),
+                    self.hook_ctx.clone(),
                 );
                 self.render_thread = Some(handle);
             }
             Effect::StopRenderThread => {
-                self.state.running.store(false, Ordering::SeqCst);
+                self.hook_ctx.running.store(false, Ordering::SeqCst);
                 if let Some(handle) = self.render_thread.take() {
                     let _ = handle.join();
                 }
             }
             Effect::HideSystemCursors => cursor::hide_system_cursors(),
             Effect::RestoreSystemCursors => cursor::restore_system_cursors(),
-            Effect::ActiveChanged(active) => {
-                self.state.active.store(active, Ordering::SeqCst);
-                self.controls.item_active.set_checked(active);
+            Effect::StateChanged => {
+                let snapshot = self.state.snapshot();
+                self.controls.sync_all(snapshot);
+                unsafe {
+                    if snapshot.active {
+                        cursor::hide_system_cursors();
+                        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+                    } else {
+                        cursor::restore_system_cursors();
+                        let _ = ShowWindow(self.hwnd, SW_HIDE);
+                    }
+                }
             }
-            Effect::PresentationChanged(active) => {
-                self.state.presentation.store(active, Ordering::SeqCst);
-                self.controls.item_pres.set_checked(active);
-            }
-            Effect::ScaleChanged(pct) => {
-                self.state.scale_pct.store(pct, Ordering::SeqCst);
-                self.controls.sync_size_checks(pct);
-            }
-            Effect::SoundChanged(preset) => {
-                self.state
-                    .sound_preset
-                    .store(preset.as_u8(), Ordering::SeqCst);
-                self.controls.sync_sound_checks(preset);
-            }
-            Effect::VolumeChanged(volume) => {
-                self.state.volume.store(volume, Ordering::SeqCst);
-                self.controls.sync_volume_checks(volume);
-            }
-            Effect::SuppressClick(suppress) => {
-                self.state.suppress_click.store(suppress, Ordering::SeqCst);
-            }
-            Effect::ShowOverlay => unsafe {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            },
-            Effect::HideOverlay => unsafe {
-                let _ = ShowWindow(self.hwnd, SW_HIDE);
-            },
             Effect::PostQuit => unsafe {
                 PostQuitMessage(0);
             },
@@ -814,11 +790,8 @@ fn main() {
         };
         RegisterClassExW(&wc);
 
-        let ex_style = WS_EX_LAYERED
-            | WS_EX_TRANSPARENT
-            | WS_EX_TOPMOST
-            | WS_EX_TOOLWINDOW
-            | WS_EX_NOACTIVATE;
+        let ex_style =
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
         let hwnd = CreateWindowExW(
             ex_style,
@@ -837,8 +810,9 @@ fn main() {
         .expect("Failed to create overlay window");
 
         let controls = create_tray_icon();
-        let mut platform = Win32Platform::new(hwnd, controls, init_pt);
-        let mut app = App::new();
+        let state = Arc::new(OverlayState::new());
+        let mut platform = Win32Platform::new(hwnd, controls, init_pt, state.clone());
+        let mut app = App::new(state);
 
         app.handle(Event::Start, &mut platform);
         app.run(&mut platform);
@@ -921,7 +895,12 @@ mod tests {
         let controls = create_tray_icon();
         let tray_hwnd = tray_window();
         let quit_id = quit_command_id(tray_hwnd, &controls);
-        let mut platform = Win32Platform::new(hwnd, controls, POINT { x: 500, y: 500 });
+        let mut platform = Win32Platform::new(
+            hwnd,
+            controls,
+            POINT { x: 500, y: 500 },
+            Arc::new(OverlayState::new()),
+        );
 
         let thread_id = unsafe { GetCurrentThreadId() };
         thread::spawn(move || {

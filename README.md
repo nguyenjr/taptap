@@ -10,7 +10,7 @@
 - **Spring-driven animation** — damped oscillators drive translation, wrist tilt, and scaling. Rapid clicks compound combo heat, winding the hand up for harder strikes.
 - **Cartoon impact effects** — tapered comic rays, staggered burst timing, and secondary shockwave arcs around the fingertip.
 - **Procedural audio** — four built-in click sounds (Wood Knock, Click, Bell, and a balloon-pop Pop) generated in memory with no asset files. Combo heat raises pitch and intensity; volume runs from Off to 100%.
-- **Presentation Mode** — suppresses mouse clicks globally while keeping the animation and sound, so you can point at screen elements without activating them. Keyboard hotkeys remain the way out.
+- **Presentation Mode** — while the overlay is Active, suppresses mouse clicks globally while keeping the animation and sound, so you can point at screen elements without activating them. Keyboard hotkeys remain the way out.
 - **Customizable hand size** — presets (75%, 100%, 135%, 175%) plus 10% steps, clamped to 50–200%.
 - **Robust failsafes** — restores the system cursors on exit, crash, or emergency termination.
 - **Single-instance enforcement** — a global OS mutex guarantees only one instance runs.
@@ -41,7 +41,7 @@ Right-click the tray icon to:
 - Choose a Volume: Off, Quiet (25%), 50%, 75%, or 100%. `Off` replaces the old Mute Audio item.
 - Quit.
 
-Presentation Mode deliberately suppresses mouse clicks across the desktop, so the tray cannot be used while it is on — use the hotkeys to leave that state or quit.
+While the overlay is Active, Presentation Mode deliberately suppresses mouse clicks across the desktop, so the tray cannot be used while it is on — use the hotkeys to leave that state or quit. Toggling the overlay Inactive ends click suppression.
 
 ---
 

@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::BOOL;
-use windows::Win32::System::Console::{SetConsoleCtrlHandler, CTRL_C_EVENT, CTRL_CLOSE_EVENT};
+use windows::Win32::System::Console::{SetConsoleCtrlHandler, CTRL_CLOSE_EVENT, CTRL_C_EVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, CreateCursor, DestroyCursor, SetSystemCursor, SystemParametersInfoW, HCURSOR,
-    HICON, OCR_APPSTARTING, OCR_CROSS, OCR_HAND, OCR_HELP, OCR_IBEAM, OCR_NO, OCR_NORMAL,
-    OCR_SIZEALL, OCR_SIZENESW, OCR_SIZENS, OCR_SIZENWSE, OCR_SIZEWE, OCR_WAIT,
-    SPIF_SENDCHANGE, SPI_SETCURSORS, SYSTEM_CURSOR_ID,
+    CopyIcon, CreateCursor, DestroyCursor, SetSystemCursor, SystemParametersInfoW, HCURSOR, HICON,
+    OCR_APPSTARTING, OCR_CROSS, OCR_HAND, OCR_HELP, OCR_IBEAM, OCR_NO, OCR_NORMAL, OCR_SIZEALL,
+    OCR_SIZENESW, OCR_SIZENS, OCR_SIZENWSE, OCR_SIZEWE, OCR_WAIT, SPIF_SENDCHANGE, SPI_SETCURSORS,
+    SYSTEM_CURSOR_ID,
 };
 
 static CURSOR_HIDDEN: AtomicBool = AtomicBool::new(false);
