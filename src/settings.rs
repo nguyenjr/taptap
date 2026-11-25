@@ -3,16 +3,46 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundPreset {
+    Wood,
+    Click,
+    Bell,
+    Pop,
+}
+
+impl SoundPreset {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Wood => 0,
+            Self::Click => 1,
+            Self::Bell => 2,
+            Self::Pop => 3,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Click,
+            2 => Self::Bell,
+            3 => Self::Pop,
+            _ => Self::Wood,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub scale_pct: u32,
-    pub muted: bool,
+    pub sound: SoundPreset,
+    pub volume: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             scale_pct: 100,
-            muted: false,
+            sound: SoundPreset::Wood,
+            volume: 100,
         }
     }
 }
@@ -33,16 +63,34 @@ fn format_scale_pct(settings: &Settings) -> String {
     settings.scale_pct.to_string()
 }
 
-fn parse_muted(value: &str, settings: &mut Settings) {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" => settings.muted = true,
-        "false" => settings.muted = false,
-        _ => {}
+fn parse_sound(value: &str, settings: &mut Settings) {
+    settings.sound = match value.trim().to_ascii_lowercase().as_str() {
+        "click" => SoundPreset::Click,
+        "bell" => SoundPreset::Bell,
+        "pop" => SoundPreset::Pop,
+        "wood" => SoundPreset::Wood,
+        _ => return,
+    };
+}
+
+fn format_sound(settings: &Settings) -> String {
+    match settings.sound {
+        SoundPreset::Wood => "wood",
+        SoundPreset::Click => "click",
+        SoundPreset::Bell => "bell",
+        SoundPreset::Pop => "pop",
+    }
+    .to_string()
+}
+
+fn parse_volume(value: &str, settings: &mut Settings) {
+    if let Ok(volume) = value.trim().parse::<u8>() {
+        settings.volume = volume.clamp(0, 100);
     }
 }
 
-fn format_muted(settings: &Settings) -> String {
-    settings.muted.to_string()
+fn format_volume(settings: &Settings) -> String {
+    settings.volume.to_string()
 }
 
 const FIELDS: &[Field] = &[
@@ -52,9 +100,14 @@ const FIELDS: &[Field] = &[
         format: format_scale_pct,
     },
     Field {
-        key: "muted",
-        parse: parse_muted,
-        format: format_muted,
+        key: "sound",
+        parse: parse_sound,
+        format: format_sound,
+    },
+    Field {
+        key: "volume",
+        parse: parse_volume,
+        format: format_volume,
     },
 ];
 
@@ -146,7 +199,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{Settings, SoundPreset};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -193,7 +246,8 @@ mod tests {
         let file = dir.file();
         let settings = Settings {
             scale_pct: 175,
-            muted: true,
+            sound: SoundPreset::Bell,
+            volume: 25,
         };
         settings.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), settings);
@@ -206,13 +260,14 @@ mod tests {
         let file = dir.file();
         Settings {
             scale_pct: 75,
-            muted: false,
+            ..Default::default()
         }
         .save_to(&file)
         .unwrap();
         let settings = Settings {
             scale_pct: 135,
-            muted: true,
+            sound: SoundPreset::Pop,
+            volume: 0,
         };
         settings.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), settings);
@@ -223,7 +278,7 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file();
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, "scale_pct=abc\nmuted=maybe\n").unwrap();
+        fs::write(&file, "scale_pct=abc\nvolume=maybe\n").unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), Settings::default());
     }
 
@@ -232,12 +287,12 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file();
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(&file, "scale_pct=999\nmuted=true\n").unwrap();
+        fs::write(&file, "scale_pct=999\n").unwrap();
         assert_eq!(
             Settings::load_from(&file).unwrap(),
             Settings {
                 scale_pct: 200,
-                muted: true,
+                ..Default::default()
             }
         );
         fs::write(&file, "scale_pct=1\n").unwrap();
@@ -249,18 +304,34 @@ mod tests {
         let dir = TempDir::new();
         let file = dir.file();
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        fs::write(
-            &file,
-            "\n# a comment\nunknown=1\nscale_pct=135\n muted = TRUE \n",
-        )
-        .unwrap();
+        fs::write(&file, "\n# a comment\nunknown=1\nscale_pct=135\n").unwrap();
         assert_eq!(
             Settings::load_from(&file).unwrap(),
             Settings {
                 scale_pct: 135,
-                muted: true,
+                ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn sound_and_volume_round_trip_and_clamp() {
+        let dir = TempDir::new();
+        let file = dir.file();
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "sound=Bell\nvolume=250\n").unwrap();
+        assert_eq!(
+            Settings::load_from(&file).unwrap(),
+            Settings {
+                sound: SoundPreset::Bell,
+                volume: 100,
+                ..Default::default()
+            }
+        );
+        fs::write(&file, "sound=unknown\nvolume=abc\n").unwrap();
+        assert_eq!(Settings::load_from(&file).unwrap(), Settings::default());
+        assert_eq!(SoundPreset::from_u8(3), SoundPreset::Pop);
+        assert_eq!(SoundPreset::Wood.as_u8(), 0);
     }
 
     #[test]

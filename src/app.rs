@@ -1,12 +1,13 @@
 use crate::platform::{Effect, Event, Hotkey, MenuAction, Platform};
-use crate::settings::Settings;
+use crate::settings::{Settings, SoundPreset};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppState {
     pub active: bool,
     pub presentation: bool,
-    pub muted: bool,
     pub scale_pct: u32,
+    pub sound: SoundPreset,
+    pub volume: u8,
 }
 
 impl Default for AppState {
@@ -14,8 +15,9 @@ impl Default for AppState {
         Self {
             active: true,
             presentation: false,
-            muted: false,
             scale_pct: 100,
+            sound: SoundPreset::Wood,
+            volume: 100,
         }
     }
 }
@@ -24,10 +26,11 @@ impl Default for AppState {
 enum Command {
     ToggleActive,
     TogglePresentation,
-    ToggleMute,
     ScaleUp,
     ScaleDown,
     SetScale(u32),
+    SetSound(SoundPreset),
+    SetVolume(u8),
     Quit,
 }
 
@@ -93,10 +96,11 @@ impl App {
                 let command = match action {
                     MenuAction::ToggleActive => Command::ToggleActive,
                     MenuAction::TogglePresentation => Command::TogglePresentation,
-                    MenuAction::ToggleMute => Command::ToggleMute,
                     MenuAction::ScaleUp => Command::ScaleUp,
                     MenuAction::ScaleDown => Command::ScaleDown,
                     MenuAction::SetScale(pct) => Command::SetScale(pct),
+                    MenuAction::SetSound(preset) => Command::SetSound(preset),
+                    MenuAction::SetVolume(volume) => Command::SetVolume(volume),
                     MenuAction::Quit => Command::Quit,
                 };
                 self.command(command, platform);
@@ -106,9 +110,11 @@ impl App {
             }
             Event::SettingsLoaded(settings) => {
                 self.state.scale_pct = settings.scale_pct;
-                self.state.muted = settings.muted;
+                self.state.sound = settings.sound;
+                self.state.volume = settings.volume;
                 platform.emit(Effect::ScaleChanged(settings.scale_pct));
-                platform.emit(Effect::MuteChanged(settings.muted));
+                platform.emit(Effect::SoundChanged(settings.sound));
+                platform.emit(Effect::VolumeChanged(settings.volume));
             }
             Event::SettingsLoadFailed(message) | Event::SettingsSaveFailed(message) => {
                 platform.emit(Effect::ReportError(message));
@@ -149,11 +155,6 @@ impl App {
                 platform.emit(Effect::PresentationChanged(self.state.presentation));
                 platform.emit(Effect::SuppressClick(self.suppression()));
             }
-            Command::ToggleMute => {
-                self.state.muted = !self.state.muted;
-                platform.emit(Effect::MuteChanged(self.state.muted));
-                platform.emit(Effect::SaveSettings(self.settings()));
-            }
             Command::ScaleUp | Command::ScaleDown => {
                 let delta = match command {
                     Command::ScaleUp => 10,
@@ -169,6 +170,17 @@ impl App {
                 platform.emit(Effect::ScaleChanged(pct));
                 platform.emit(Effect::SaveSettings(self.settings()));
             }
+            Command::SetSound(preset) => {
+                self.state.sound = preset;
+                platform.emit(Effect::SoundChanged(preset));
+                platform.emit(Effect::SaveSettings(self.settings()));
+            }
+            Command::SetVolume(volume) => {
+                let next = volume.clamp(0, 100);
+                self.state.volume = next;
+                platform.emit(Effect::VolumeChanged(next));
+                platform.emit(Effect::SaveSettings(self.settings()));
+            }
             Command::Quit => self.shutdown(platform, true),
         }
     }
@@ -176,7 +188,8 @@ impl App {
     fn settings(&self) -> Settings {
         Settings {
             scale_pct: self.state.scale_pct,
-            muted: self.state.muted,
+            sound: self.state.sound,
+            volume: self.state.volume,
         }
     }
 
@@ -195,7 +208,7 @@ impl App {
 mod tests {
     use super::App;
     use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
-    use crate::settings::Settings;
+    use crate::settings::{Settings, SoundPreset};
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
         let mut platform = FakePlatform::new(events);
@@ -242,31 +255,54 @@ mod tests {
         app.handle(
             Event::SettingsLoaded(Settings {
                 scale_pct: 175,
-                muted: true,
+                sound: SoundPreset::Bell,
+                volume: 25,
             }),
             &mut platform,
         );
         assert_eq!(app.state().scale_pct, 175);
-        assert!(app.state().muted);
+        assert_eq!(app.state().sound, SoundPreset::Bell);
+        assert_eq!(app.state().volume, 25);
         assert_eq!(
             platform.effects,
-            vec![Effect::ScaleChanged(175), Effect::MuteChanged(true)]
+            vec![
+                Effect::ScaleChanged(175),
+                Effect::SoundChanged(SoundPreset::Bell),
+                Effect::VolumeChanged(25),
+            ]
         );
     }
 
     #[test]
-    fn scale_and_mute_changes_save_a_full_snapshot() {
+    fn scale_changes_save_a_full_snapshot() {
         let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
         app.handle(Event::Hotkey(Hotkey::ScaleUp), &mut platform);
-        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
         assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
             scale_pct: 110,
-            muted: false,
+            ..Default::default()
         })));
+    }
+
+    #[test]
+    fn sound_and_volume_selections_emit_effects_and_save() {
+        let mut app = App::new();
+        let mut platform = FakePlatform::new(vec![]);
+        app.handle(
+            Event::Menu(MenuAction::SetSound(SoundPreset::Pop)),
+            &mut platform,
+        );
+        app.handle(Event::Menu(MenuAction::SetVolume(250)), &mut platform);
+        assert_eq!(app.state().sound, SoundPreset::Pop);
+        assert_eq!(app.state().volume, 100);
+        assert!(platform
+            .effects
+            .contains(&Effect::SoundChanged(SoundPreset::Pop)));
+        assert!(platform.effects.contains(&Effect::VolumeChanged(100)));
         assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
-            scale_pct: 110,
-            muted: true,
+            sound: SoundPreset::Pop,
+            volume: 100,
+            ..Default::default()
         })));
     }
 
@@ -321,17 +357,13 @@ mod tests {
     }
 
     #[test]
-    fn presentation_and_mute_toggle_from_both_sources() {
+    fn presentation_toggles_from_both_sources() {
         let mut app = App::new();
         let mut platform = FakePlatform::new(vec![]);
         app.handle(Event::Hotkey(Hotkey::TogglePresentation), &mut platform);
-        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
         assert!(app.state().presentation);
-        assert!(app.state().muted);
         app.handle(Event::Menu(MenuAction::TogglePresentation), &mut platform);
-        app.handle(Event::Menu(MenuAction::ToggleMute), &mut platform);
         assert!(!app.state().presentation);
-        assert!(!app.state().muted);
     }
 
     #[test]

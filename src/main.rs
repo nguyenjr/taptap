@@ -16,8 +16,9 @@ use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
 use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
 use resvg::usvg::{Options, Tree};
+use settings::{Settings, SoundPreset};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -54,9 +55,10 @@ enum InputEvent {
 struct RuntimeState {
     active: AtomicBool,
     presentation: AtomicBool,
-    muted: AtomicBool,
     running: AtomicBool,
     scale_pct: AtomicU32,
+    sound_preset: AtomicU8,
+    volume: AtomicU8,
     mouse_x: AtomicI32,
     mouse_y: AtomicI32,
     suppress_click: AtomicBool,
@@ -77,9 +79,10 @@ impl RuntimeState {
         Self {
             active: AtomicBool::new(true),
             presentation: AtomicBool::new(false),
-            muted: AtomicBool::new(false),
             running: AtomicBool::new(true),
             scale_pct: AtomicU32::new(100),
+            sound_preset: AtomicU8::new(SoundPreset::Wood.as_u8()),
+            volume: AtomicU8::new(100),
             mouse_x: AtomicI32::new(initial_cursor.x),
             mouse_y: AtomicI32::new(initial_cursor.y),
             suppress_click: AtomicBool::new(false),
@@ -148,6 +151,21 @@ const SIZE_PRESETS: [(u32, &str); 4] = [
     (100, "Medium (100% - Default)"),
     (135, "Large (135%)"),
     (175, "Extra Large (175%)"),
+];
+
+const SOUND_OPTIONS: [(SoundPreset, &str); 4] = [
+    (SoundPreset::Wood, "Wood Knock"),
+    (SoundPreset::Click, "Click"),
+    (SoundPreset::Bell, "Bell"),
+    (SoundPreset::Pop, "Pop"),
+];
+
+const VOLUME_OPTIONS: [(u8, &str); 5] = [
+    (0, "Off"),
+    (25, "Quiet (25%)"),
+    (50, "50%"),
+    (75, "75%"),
+    (100, "100% (Default)"),
 ];
 
 unsafe extern "system" fn wnd_proc(
@@ -323,9 +341,10 @@ fn spawn_render_thread(
                     match ev {
                         InputEvent::LeftDown => {
                             animator.trigger_click(true);
-                            if !state.muted.load(Ordering::Relaxed) {
-                                audio.play_poke(animator.combo_heat);
-                            }
+                            let preset =
+                                SoundPreset::from_u8(state.sound_preset.load(Ordering::Relaxed));
+                            let volume = state.volume.load(Ordering::Relaxed);
+                            audio.play_poke(animator.combo_heat, preset, volume);
                             force_topmost = true;
                         }
                         InputEvent::LeftUp => {
@@ -412,10 +431,11 @@ struct TrayControls {
     _tray: tray_icon::TrayIcon,
     item_active: CheckMenuItem,
     item_pres: CheckMenuItem,
-    item_mute: CheckMenuItem,
     size_items: Vec<(u32, CheckMenuItem)>,
     item_size_up: MenuItem,
     item_size_down: MenuItem,
+    sound_items: Vec<(SoundPreset, CheckMenuItem)>,
+    volume_items: Vec<(u8, CheckMenuItem)>,
     item_quit: MenuItem,
 }
 
@@ -423,6 +443,18 @@ impl TrayControls {
     fn sync_size_checks(&self, active_pct: u32) {
         for (pct, item) in &self.size_items {
             item.set_checked(*pct == active_pct);
+        }
+    }
+
+    fn sync_sound_checks(&self, active: SoundPreset) {
+        for (preset, item) in &self.sound_items {
+            item.set_checked(*preset == active);
+        }
+    }
+
+    fn sync_volume_checks(&self, active: u8) {
+        for (level, item) in &self.volume_items {
+            item.set_checked(*level == active);
         }
     }
 }
@@ -441,8 +473,6 @@ fn create_tray_icon() -> TrayControls {
         false,
         None,
     );
-    let item_mute = CheckMenuItem::new("Mute Audio", true, false, None);
-
     let size_submenu = Submenu::new("Hand Size", true);
     let mut size_items = Vec::with_capacity(SIZE_PRESETS.len());
     for (pct, label) in SIZE_PRESETS {
@@ -457,13 +487,30 @@ fn create_tray_icon() -> TrayControls {
     let _ = size_submenu.append(&item_size_up);
     let _ = size_submenu.append(&item_size_down);
 
+    let sound_submenu = Submenu::new("Click Sound", true);
+    let mut sound_items = Vec::with_capacity(SOUND_OPTIONS.len());
+    for (preset, label) in SOUND_OPTIONS {
+        let check_item = CheckMenuItem::new(label, true, preset == SoundPreset::Wood, None);
+        let _ = sound_submenu.append(&check_item);
+        sound_items.push((preset, check_item));
+    }
+
+    let volume_submenu = Submenu::new("Volume", true);
+    let mut volume_items = Vec::with_capacity(VOLUME_OPTIONS.len());
+    for (level, label) in VOLUME_OPTIONS {
+        let check_item = CheckMenuItem::new(label, true, level == 100, None);
+        let _ = volume_submenu.append(&check_item);
+        volume_items.push((level, check_item));
+    }
+
     let item_quit = MenuItem::new(hotkey_binding(Hotkey::Quit).menu_label, true, None);
 
     let _ = menu.append(&item_active);
     let _ = menu.append(&item_pres);
-    let _ = menu.append(&item_mute);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&size_submenu);
+    let _ = menu.append(&sound_submenu);
+    let _ = menu.append(&volume_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&item_quit);
 
@@ -491,10 +538,11 @@ fn create_tray_icon() -> TrayControls {
         _tray: tray,
         item_active,
         item_pres,
-        item_mute,
         size_items,
         item_size_up,
         item_size_down,
+        sound_items,
+        volume_items,
         item_quit,
     }
 }
@@ -511,14 +559,24 @@ fn menu_action(event: &MenuEvent, controls: &TrayControls) -> Option<MenuAction>
         Some(MenuAction::ToggleActive)
     } else if event.id == controls.item_pres.id() {
         Some(MenuAction::TogglePresentation)
-    } else if event.id == controls.item_mute.id() {
-        Some(MenuAction::ToggleMute)
     } else if event.id == controls.item_size_up.id() {
         Some(MenuAction::ScaleUp)
     } else if event.id == controls.item_size_down.id() {
         Some(MenuAction::ScaleDown)
     } else if event.id == controls.item_quit.id() {
         Some(MenuAction::Quit)
+    } else if let Some((preset, _)) = controls
+        .sound_items
+        .iter()
+        .find(|(_, item)| event.id == item.id())
+    {
+        Some(MenuAction::SetSound(*preset))
+    } else if let Some((level, _)) = controls
+        .volume_items
+        .iter()
+        .find(|(_, item)| event.id == item.id())
+    {
+        Some(MenuAction::SetVolume(*level))
     } else {
         controls
             .size_items
@@ -679,13 +737,19 @@ impl Platform for Win32Platform {
                 self.state.presentation.store(active, Ordering::SeqCst);
                 self.controls.item_pres.set_checked(active);
             }
-            Effect::MuteChanged(muted) => {
-                self.state.muted.store(muted, Ordering::SeqCst);
-                self.controls.item_mute.set_checked(muted);
-            }
             Effect::ScaleChanged(pct) => {
                 self.state.scale_pct.store(pct, Ordering::SeqCst);
                 self.controls.sync_size_checks(pct);
+            }
+            Effect::SoundChanged(preset) => {
+                self.state
+                    .sound_preset
+                    .store(preset.as_u8(), Ordering::SeqCst);
+                self.controls.sync_sound_checks(preset);
+            }
+            Effect::VolumeChanged(volume) => {
+                self.state.volume.store(volume, Ordering::SeqCst);
+                self.controls.sync_volume_checks(volume);
             }
             Effect::SuppressClick(suppress) => {
                 self.state.suppress_click.store(suppress, Ordering::SeqCst);
@@ -700,7 +764,7 @@ impl Platform for Win32Platform {
                 PostQuitMessage(0);
             },
             Effect::ReportError(message) => eprintln!("TapTap: {message}"),
-            Effect::LoadSettings => match settings::Settings::load() {
+            Effect::LoadSettings => match Settings::load() {
                 Ok(settings) => self.pending.push_back(Event::SettingsLoaded(settings)),
                 Err(error) => self.pending.push_back(Event::SettingsLoadFailed(error)),
             },
