@@ -9,9 +9,28 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.100.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test -- --skip menu_quit_event_is_delivered_on_the_first_message
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked -- --skip menu_quit_event_is_delivered_on_the_first_message
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taptap
+          path: target/release/taptap.exe
+
+  desktop_test:
+    name: desktop test
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked menu_quit_event_is_delivered_on_the_first_message

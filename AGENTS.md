@@ -1,6 +1,6 @@
 # taptap
 
-Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Requires Windows + stable MSVC toolchain (`winresource` in `build.rs` needs `rc.exe`). No rustfmt/clippy config, no `tests/`.
+Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Requires Windows + MSVC toolchain pinned in `rust-toolchain.toml` (`winresource` in `build.rs` needs `rc.exe`). No rustfmt/clippy config, no `tests/`.
 
 ## Commands
 
@@ -11,7 +11,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
   - `cargo test app::tests` — pure state-machine tests via `FakePlatform`; no GUI needed.
   - `cargo test settings::tests` — temp-dir files, safe.
   - `cargo test menu_quit_event_is_delivered_on_the_first_message` (`main.rs`) — real tray/message-loop test; needs a desktop session and posts `WM_QUIT` after 300 ms, so it can hang headless.
-- `cargo fmt` / `cargo clippy` use tool defaults (no config files); `.github/workflows/checks.yml` runs `fmt --check`, `clippy -D warnings` and `cargo test` minus the desktop-only test.
+- `cargo fmt` / `cargo clippy` use tool defaults (no config files); `.github/workflows/checks.yml` runs `fmt --check`, `clippy -D warnings`, tests minus the desktop-only test, a release build, and the desktop test in a separate 5-minute job.
 
 ## Architecture
 
