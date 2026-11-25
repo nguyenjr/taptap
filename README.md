@@ -63,7 +63,8 @@ Missing or invalid values fall back to the defaults (`100`, `wood`, `100`); unkn
 
 ### Prerequisites
 
-- Rust toolchain (stable MSVC toolchain via [rustup](https://rustup.rs/))
+- Rust toolchain via [rustup](https://rustup.rs/); the version is pinned in `rust-toolchain.toml` (1.100.0) and installed automatically
+- MSVC toolchain on Windows (`rc.exe` is needed by `build.rs` for the embedded icon)
 - Cargo (bundled with Rust)
 
 ### Compilation Steps
@@ -71,7 +72,7 @@ Missing or invalid values fall back to the defaults (`100`, `wood`, `100`); unkn
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/your-username/taptap.git
+git clone https://github.com/nguyenjr/taptap.git
 cd taptap
 ```
 
@@ -88,3 +89,16 @@ target\release\taptap.exe
 ```
 
 Release builds run without a console window.
+
+---
+
+## Releasing
+
+Releases are published automatically when a version tag is pushed:
+
+```bash
+git tag -a v0.1.0 -m "Release 0.1.0"
+git push origin v0.1.0
+```
+
+The `release` workflow builds `taptap.exe` and attaches it to a GitHub Release with generated notes. Tag only commits that have passed CI on `main`.
