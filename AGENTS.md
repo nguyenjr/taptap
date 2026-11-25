@@ -12,6 +12,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
   - `cargo test settings::tests` — temp-dir files, safe.
   - `cargo test menu_quit_event_is_delivered_on_the_first_message` (`main.rs`) — real tray/message-loop test; needs a desktop session and posts `WM_QUIT` after 300 ms, so it can hang headless.
 - `cargo fmt` / `cargo clippy` use tool defaults (no config files); `.github/workflows/checks.yml` runs `fmt --check`, `clippy -D warnings`, tests minus the desktop-only test, a release build, `cargo audit`, and the desktop test in a separate 5-minute job.
+- Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and publishes `taptap.exe` as a GitHub Release.
 
 ## Architecture
 

@@ -1,0 +1,19 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - run: cargo build --release --locked
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: target/release/taptap.exe
+          generate_release_notes: true
