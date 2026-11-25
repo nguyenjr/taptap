@@ -13,6 +13,7 @@ mod spring;
 use app::App;
 use audio::AudioEngine;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use hand_art::{glove_markup, HandStyle, HAND_STYLES};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use overlay_state::{OverlayState, OverlayStateSnapshot};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
@@ -150,6 +151,7 @@ fn hotkey_binding(hotkey: Hotkey) -> &'static HotkeyBinding {
 enum MenuGroup {
     Root,
     HandSize,
+    HandStyle,
     ClickSound,
     Volume,
 }
@@ -246,6 +248,22 @@ const MENU_BINDINGS: &[MenuBinding] = &[
         checked: false,
     },
     MenuBinding {
+        id: "hand-classic",
+        label: Some(HAND_STYLES[0].label),
+        hotkey: None,
+        action: MenuAction::SetHand(HandStyle(0)),
+        group: MenuGroup::HandStyle,
+        checked: true,
+    },
+    MenuBinding {
+        id: "hand-gingerbread",
+        label: Some(HAND_STYLES[1].label),
+        hotkey: None,
+        action: MenuAction::SetHand(HandStyle(1)),
+        group: MenuGroup::HandStyle,
+        checked: false,
+    },
+    MenuBinding {
         id: "sound-wood",
         label: Some("Wood Knock"),
         hotkey: None,
@@ -274,6 +292,14 @@ const MENU_BINDINGS: &[MenuBinding] = &[
         label: Some("Pop"),
         hotkey: None,
         action: MenuAction::SetSound(SoundPreset::Pop),
+        group: MenuGroup::ClickSound,
+        checked: false,
+    },
+    MenuBinding {
+        id: "sound-jingle",
+        label: Some("Jingle Bell"),
+        hotkey: None,
+        action: MenuAction::SetSound(SoundPreset::JingleBell),
         group: MenuGroup::ClickSound,
         checked: false,
     },
@@ -553,7 +579,8 @@ fn spawn_render_thread(
                 let pres_mode = snapshot.presentation;
 
                 animator.step(dt, user_scale);
-                let pixels = animator.render_bgra(dpi_scale, user_scale, pres_mode);
+                let pixels =
+                    animator.render_bgra(dpi_scale, user_scale, pres_mode, snapshot.hand_style);
 
                 std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits_ptr as *mut u8, pixels.len());
 
@@ -591,6 +618,7 @@ struct TrayControls {
     item_active: CheckMenuItem,
     item_pres: CheckMenuItem,
     size_items: Vec<(u32, CheckMenuItem)>,
+    hand_items: Vec<(HandStyle, CheckMenuItem)>,
     sound_items: Vec<(SoundPreset, CheckMenuItem)>,
     volume_items: Vec<(u8, CheckMenuItem)>,
 }
@@ -601,6 +629,9 @@ impl TrayControls {
         self.item_pres.set_checked(snapshot.presentation);
         for (pct, item) in &self.size_items {
             item.set_checked(*pct == snapshot.scale_pct);
+        }
+        for (style, item) in &self.hand_items {
+            item.set_checked(*style == snapshot.hand_style);
         }
         for (preset, item) in &self.sound_items {
             item.set_checked(*preset == snapshot.sound);
@@ -637,6 +668,19 @@ fn create_tray_icon() -> TrayControls {
     let _ = size_submenu.append(&item_size_up);
     let _ = size_submenu.append(&item_size_down);
 
+    let hand_submenu = Submenu::new("Hand Style", true);
+    let hand_items: Vec<(HandStyle, CheckMenuItem)> = MENU_BINDINGS
+        .iter()
+        .filter(|binding| binding.group == MenuGroup::HandStyle)
+        .filter_map(|binding| match binding.action {
+            MenuAction::SetHand(style) => Some((style, check_item(binding.action))),
+            _ => None,
+        })
+        .collect();
+    for (_, item) in &hand_items {
+        let _ = hand_submenu.append(item);
+    }
+
     let sound_submenu = Submenu::new("Click Sound", true);
     let sound_items: Vec<(SoundPreset, CheckMenuItem)> = MENU_BINDINGS
         .iter()
@@ -666,6 +710,7 @@ fn create_tray_icon() -> TrayControls {
     let item_quit = plain_item(MenuAction::Quit);
 
     let _ = menu.append(&size_submenu);
+    let _ = menu.append(&hand_submenu);
     let _ = menu.append(&sound_submenu);
     let _ = menu.append(&volume_submenu);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -677,7 +722,7 @@ fn create_tray_icon() -> TrayControls {
   {}
 </svg>
 "##,
-        hand_art::glove_markup(10.0, 7.0, 7.0)
+        glove_markup(10.0, 7.0, 7.0)
     );
     let tree = Tree::from_str(&icon_svg, &Options::default()).expect("Valid tray icon SVG");
     let mut pixmap = Pixmap::new(32, 32).expect("Failed to allocate tray icon pixmap");
@@ -696,6 +741,7 @@ fn create_tray_icon() -> TrayControls {
         item_active,
         item_pres,
         size_items,
+        hand_items,
         sound_items,
         volume_items,
     }
@@ -1019,6 +1065,19 @@ mod tests {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+        }
+    }
+
+    #[test]
+    fn every_hand_style_has_a_menu_binding() {
+        for (index, style) in HAND_STYLES.iter().enumerate() {
+            let action = MenuAction::SetHand(HandStyle(index as u8));
+            assert!(MENU_BINDINGS
+                .iter()
+                .any(|binding| binding.group == MenuGroup::HandStyle && binding.action == action));
+            assert!(MENU_BINDINGS
+                .iter()
+                .any(|binding| binding.label == Some(style.label)));
         }
     }
 

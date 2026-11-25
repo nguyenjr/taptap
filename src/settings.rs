@@ -1,3 +1,4 @@
+use crate::hand_art::HandStyle;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ pub enum SoundPreset {
     Click,
     Bell,
     Pop,
+    JingleBell,
 }
 
 impl SoundPreset {
@@ -17,6 +19,7 @@ impl SoundPreset {
             Self::Click => 1,
             Self::Bell => 2,
             Self::Pop => 3,
+            Self::JingleBell => 4,
         }
     }
 
@@ -25,6 +28,7 @@ impl SoundPreset {
             1 => Self::Click,
             2 => Self::Bell,
             3 => Self::Pop,
+            4 => Self::JingleBell,
             _ => Self::Wood,
         }
     }
@@ -33,6 +37,7 @@ impl SoundPreset {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub scale_pct: u32,
+    pub hand_style: HandStyle,
     pub sound: SoundPreset,
     pub volume: u8,
 }
@@ -41,6 +46,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             scale_pct: 100,
+            hand_style: HandStyle::default(),
             sound: SoundPreset::Wood,
             volume: 100,
         }
@@ -63,11 +69,22 @@ fn format_scale_pct(settings: &Settings) -> String {
     settings.scale_pct.to_string()
 }
 
+fn parse_hand_style(value: &str, settings: &mut Settings) {
+    if let Some(style) = HandStyle::from_id(value.trim()) {
+        settings.hand_style = style;
+    }
+}
+
+fn format_hand_style(settings: &Settings) -> String {
+    settings.hand_style.binding().id.to_string()
+}
+
 fn parse_sound(value: &str, settings: &mut Settings) {
     settings.sound = match value.trim().to_ascii_lowercase().as_str() {
         "click" => SoundPreset::Click,
         "bell" => SoundPreset::Bell,
         "pop" => SoundPreset::Pop,
+        "jingle" => SoundPreset::JingleBell,
         "wood" => SoundPreset::Wood,
         _ => return,
     };
@@ -79,6 +96,7 @@ fn format_sound(settings: &Settings) -> String {
         SoundPreset::Click => "click",
         SoundPreset::Bell => "bell",
         SoundPreset::Pop => "pop",
+        SoundPreset::JingleBell => "jingle",
     }
     .to_string()
 }
@@ -98,6 +116,11 @@ const FIELDS: &[Field] = &[
         key: "scale_pct",
         parse: parse_scale_pct,
         format: format_scale_pct,
+    },
+    Field {
+        key: "hand_style",
+        parse: parse_hand_style,
+        format: format_hand_style,
     },
     Field {
         key: "sound",
@@ -200,6 +223,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::{Settings, SoundPreset};
+    use crate::hand_art::HandStyle;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -246,6 +270,7 @@ mod tests {
         let file = dir.file();
         let settings = Settings {
             scale_pct: 175,
+            hand_style: HandStyle(1),
             sound: SoundPreset::Bell,
             volume: 25,
         };
@@ -268,6 +293,7 @@ mod tests {
             scale_pct: 135,
             sound: SoundPreset::Pop,
             volume: 0,
+            ..Default::default()
         };
         settings.save_to(&file).unwrap();
         assert_eq!(Settings::load_from(&file).unwrap(), settings);
@@ -332,6 +358,25 @@ mod tests {
         assert_eq!(Settings::load_from(&file).unwrap(), Settings::default());
         assert_eq!(SoundPreset::from_u8(3), SoundPreset::Pop);
         assert_eq!(SoundPreset::Wood.as_u8(), 0);
+    }
+
+    #[test]
+    fn hand_style_and_jingle_sound_round_trip() {
+        let dir = TempDir::new();
+        let file = dir.file();
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "hand_style=gingerbread\nsound=jingle\n").unwrap();
+        let settings = Settings::load_from(&file).unwrap();
+        assert_eq!(settings.hand_style, HandStyle(1));
+        assert_eq!(settings.sound, SoundPreset::JingleBell);
+        settings.save_to(&file).unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "scale_pct=100\nhand_style=gingerbread\nsound=jingle\nvolume=100\n"
+        );
+        fs::write(&file, "hand_style=unknown\n").unwrap();
+        assert_eq!(Settings::load_from(&file).unwrap(), Settings::default());
+        assert_eq!(SoundPreset::from_u8(4), SoundPreset::JingleBell);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 /target
+.archify/
 .scratch/
 **/*.rs.bk
 .DS_Store

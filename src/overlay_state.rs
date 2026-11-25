@@ -1,3 +1,4 @@
+use crate::hand_art::HandStyle;
 use crate::settings::{Settings, SoundPreset};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
@@ -6,6 +7,7 @@ pub struct OverlayStateSnapshot {
     pub active: bool,
     pub presentation: bool,
     pub scale_pct: u32,
+    pub hand_style: HandStyle,
     pub sound: SoundPreset,
     pub volume: u8,
 }
@@ -16,6 +18,7 @@ impl Default for OverlayStateSnapshot {
             active: true,
             presentation: false,
             scale_pct: 100,
+            hand_style: HandStyle::default(),
             sound: SoundPreset::Wood,
             volume: 100,
         }
@@ -35,6 +38,7 @@ pub enum Command {
     ScaleUp,
     ScaleDown,
     SetScale(u32),
+    SetHand(HandStyle),
     SetSound(SoundPreset),
     SetVolume(u8),
     SettingsLoaded(Settings),
@@ -45,6 +49,7 @@ pub struct OverlayState {
     active: AtomicBool,
     presentation: AtomicBool,
     scale_pct: AtomicU32,
+    hand_style: AtomicU8,
     sound: AtomicU8,
     volume: AtomicU8,
 }
@@ -62,6 +67,7 @@ impl OverlayState {
             active: AtomicBool::new(defaults.active),
             presentation: AtomicBool::new(defaults.presentation),
             scale_pct: AtomicU32::new(defaults.scale_pct),
+            hand_style: AtomicU8::new(defaults.hand_style.0),
             sound: AtomicU8::new(defaults.sound.as_u8()),
             volume: AtomicU8::new(defaults.volume),
         }
@@ -72,6 +78,7 @@ impl OverlayState {
             active: self.active.load(Ordering::SeqCst),
             presentation: self.presentation.load(Ordering::SeqCst),
             scale_pct: self.scale_pct.load(Ordering::SeqCst),
+            hand_style: HandStyle::from_index(self.hand_style.load(Ordering::SeqCst)),
             sound: SoundPreset::from_u8(self.sound.load(Ordering::SeqCst)),
             volume: self.volume.load(Ordering::SeqCst),
         }
@@ -85,6 +92,7 @@ impl OverlayState {
         let snapshot = self.snapshot();
         Settings {
             scale_pct: snapshot.scale_pct,
+            hand_style: snapshot.hand_style,
             sound: snapshot.sound,
             volume: snapshot.volume,
         }
@@ -111,6 +119,7 @@ impl OverlayState {
                 self.scale_pct.store(next, Ordering::SeqCst);
             }
             Command::SetScale(pct) => self.scale_pct.store(pct.clamp(50, 200), Ordering::SeqCst),
+            Command::SetHand(style) => self.hand_style.store(style.0, Ordering::SeqCst),
             Command::SetSound(preset) => self.sound.store(preset.as_u8(), Ordering::SeqCst),
             Command::SetVolume(volume) => {
                 self.volume.store(volume.clamp(0, 100), Ordering::SeqCst);
@@ -118,6 +127,8 @@ impl OverlayState {
             Command::SettingsLoaded(settings) => {
                 self.scale_pct
                     .store(settings.scale_pct.clamp(50, 200), Ordering::SeqCst);
+                self.hand_style
+                    .store(settings.hand_style.0, Ordering::SeqCst);
                 self.sound.store(settings.sound.as_u8(), Ordering::SeqCst);
                 self.volume
                     .store(settings.volume.clamp(0, 100), Ordering::SeqCst);
@@ -130,6 +141,7 @@ impl OverlayState {
 #[cfg(test)]
 mod tests {
     use super::{Command, OverlayState, OverlayStateSnapshot};
+    use crate::hand_art::HandStyle;
     use crate::settings::{Settings, SoundPreset};
 
     fn apply(commands: &[Command]) -> OverlayStateSnapshot {
@@ -191,6 +203,7 @@ mod tests {
             Command::TogglePresentation,
             Command::SettingsLoaded(Settings {
                 scale_pct: 175,
+                hand_style: HandStyle(1),
                 sound: SoundPreset::Pop,
                 volume: 25,
             }),
@@ -198,6 +211,7 @@ mod tests {
         assert!(snapshot.active);
         assert!(snapshot.presentation);
         assert_eq!(snapshot.scale_pct, 175);
+        assert_eq!(snapshot.hand_style, HandStyle(1));
         assert_eq!(snapshot.sound, SoundPreset::Pop);
         assert_eq!(snapshot.volume, 25);
     }
@@ -206,15 +220,27 @@ mod tests {
     fn settings_snapshot_matches_the_persisted_values() {
         let state = OverlayState::new();
         state.apply(Command::SetScale(135));
+        state.apply(Command::SetHand(HandStyle(1)));
         state.apply(Command::SetSound(SoundPreset::Click));
         state.apply(Command::SetVolume(0));
         assert_eq!(
             state.settings(),
             Settings {
                 scale_pct: 135,
+                hand_style: HandStyle(1),
                 sound: SoundPreset::Click,
                 volume: 0,
             }
+        );
+    }
+
+    #[test]
+    fn hand_style_selection_applies() {
+        let snapshot = apply(&[Command::SetHand(HandStyle(1))]);
+        assert_eq!(snapshot.hand_style, HandStyle(1));
+        assert_eq!(
+            apply(&[Command::SetHand(HandStyle(9))]).hand_style,
+            HandStyle(0)
         );
     }
 }

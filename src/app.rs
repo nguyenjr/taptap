@@ -58,6 +58,7 @@ impl App {
                     MenuAction::ScaleUp => Command::ScaleUp,
                     MenuAction::ScaleDown => Command::ScaleDown,
                     MenuAction::SetScale(pct) => Command::SetScale(pct),
+                    MenuAction::SetHand(style) => Command::SetHand(style),
                     MenuAction::SetSound(preset) => Command::SetSound(preset),
                     MenuAction::SetVolume(volume) => Command::SetVolume(volume),
                     MenuAction::Quit => Command::Quit,
@@ -96,6 +97,7 @@ impl App {
             Command::ScaleUp
                 | Command::ScaleDown
                 | Command::SetScale(_)
+                | Command::SetHand(_)
                 | Command::SetSound(_)
                 | Command::SetVolume(_)
         );
@@ -120,6 +122,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
+    use crate::hand_art::HandStyle;
     use crate::overlay_state::OverlayState;
     use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
     use crate::settings::{Settings, SoundPreset};
@@ -163,12 +166,14 @@ mod tests {
         app.handle(
             Event::SettingsLoaded(Settings {
                 scale_pct: 175,
+                hand_style: HandStyle(1),
                 sound: SoundPreset::Bell,
                 volume: 25,
             }),
             &mut platform,
         );
         assert_eq!(app.state().scale_pct, 175);
+        assert_eq!(app.state().hand_style, HandStyle(1));
         assert_eq!(app.state().sound, SoundPreset::Bell);
         assert_eq!(app.state().volume, 25);
         assert_eq!(platform.effects, vec![Effect::StateChanged]);
@@ -184,6 +189,22 @@ mod tests {
             ..Default::default()
         })));
         assert!(platform.effects.contains(&Effect::StateChanged));
+    }
+
+    #[test]
+    fn hand_style_selection_changes_state_and_saves() {
+        let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
+        app.handle(
+            Event::Menu(MenuAction::SetHand(HandStyle(1))),
+            &mut platform,
+        );
+        assert_eq!(app.state().hand_style, HandStyle(1));
+        assert!(platform.effects.contains(&Effect::StateChanged));
+        assert!(platform.effects.contains(&Effect::SaveSettings(Settings {
+            hand_style: HandStyle(1),
+            ..Default::default()
+        })));
     }
 
     #[test]
