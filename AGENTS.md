@@ -12,6 +12,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
   - `cargo test settings::tests` — temp-dir files, safe.
   - `cargo test menu_quit_event_is_delivered_on_the_first_message` (`main.rs`) — real tray/message-loop test; needs a desktop session and posts `WM_QUIT` after 300 ms, so it can hang headless.
 - `cargo fmt` / `cargo clippy` use tool defaults (no config files); `.github/workflows/checks.yml` runs `fmt --check`, `clippy -D warnings`, tests minus the desktop-only test, a release build, `cargo audit`, and the desktop test in a separate 5-minute job.
+- Content search: use the grep tool; `rg` is not installed on this host.
 - Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds and publishes `taptap.exe` as a GitHub Release.
 
 ## Architecture
@@ -19,7 +20,8 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 - `src/main.rs` — entrypoint and all Win32: layered window, Presentation Mode status window, low-level mouse hook, tray menu, render thread, message loop, single-instance mutex `Local\TapTap_SingleInstance_Mutex` (second launch shows an "already running" message then exits).
 - `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume, plus per-session failure-notification bookkeeping; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
 - `src/platform.rs` — `Platform` trait and `Event`/`Effect` enums are the seam; test-only `FakePlatform` lets logic be tested without Windows. State changes cross it as one `StateChanged` effect, not per-value writes.
-- `src/app.rs` — maps events to commands and emits side effects; holds no state of its own. Put event routing here, state rules in `overlay_state.rs`, Win32 fan-out in `main.rs`.
+- `src/app.rs` — maps events to commands and emits side effects; review rules live in `CODING_STANDARDS.md`.
+- When adding UI or notifications, read `docs/notes/win32-ui-facts.md`.
 - Hotkeys: `HOTKEY_BINDINGS` in `main.rs` holds IDs 1–5, `Ctrl+Shift`, `MOD_NOREPEAT` and raw VK codes. A new/changed hotkey means editing that table, `Hotkey` in `platform.rs`, its `app.rs` mapping, and the README table.
 - Tray menu: `menu_bindings()` in `main.rs` is the single source for item IDs, labels and `MenuAction`s (hand rows come from `HAND_STYLES`); `menu_action` is a table lookup with a direct unit test. Add menu items there.
 - `src/hand_art.rs` is shared SVG markup: `#[path]`-included by `build.rs` (generates the .ico), rendered for the runtime hand (`physics_render.rs`) and tray icon (`main.rs`). Edit it and all three change; no image assets. `HAND_STYLES` is the append-only registry (id, menu id, label, markup, silhouette, arm spec) for Classic/Gingerbread and future Hands — add a row, never reorder.
@@ -29,7 +31,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 
 ## Agent workflows
 
-- Never push directly to `main`: work on a feature branch, push that branch, and merge it into `main`.
+- Before committing, create a fresh `feature/<slug>` branch; never commit onto another feature's branch. Push that branch and merge it into `main`; never push directly to `main`.
 - Issues/specs live under `.scratch/<feature-slug>/`: `spec.md` plus one `issues/NN-slug.md` per ticket, numbered from 01. `.scratch/` is gitignored — these files are local-only. See `docs/agents/issue-tracker.md`.
 - Triage `Status:` roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-- Before domain work, read `GLOSSARY.md`, `GLOSSARY-MAP.md` (if present) and relevant `docs/adr/`; if absent, proceed silently. See `docs/agents/domain.md`.
+- Before domain work, follow `docs/agents/domain.md`.
