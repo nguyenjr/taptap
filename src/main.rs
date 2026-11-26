@@ -498,6 +498,22 @@ impl Drop for RenderResources {
     }
 }
 
+fn composite_status_text(panel: &mut [u8], coverage: &[u8]) {
+    for (pixel, &cover) in panel.as_chunks_mut::<4>().0.iter_mut().zip(coverage.iter()) {
+        let alpha = cover as f32 / 255.0;
+        if alpha == 0.0 {
+            continue;
+        }
+        let keep = 1.0 - alpha;
+        let panel_alpha = pixel[3] as f32 / 255.0;
+        for channel in pixel.iter_mut().take(3) {
+            let premultiplied = *channel as f32 / 255.0;
+            *channel = ((alpha + premultiplied * keep) * 255.0) as u8;
+        }
+        pixel[3] = ((alpha + panel_alpha * keep) * 255.0) as u8;
+    }
+}
+
 fn rounded_rect_path(width: f32, height: f32, radius: f32) -> Option<Path> {
     let mut builder = PathBuilder::new();
     builder.move_to(radius, 0.0);
@@ -695,22 +711,13 @@ impl StatusWindow {
                 pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::default(), None);
             }
 
-            let pixels = pixmap.data_mut();
-            for index in 0..pixel_count {
-                let offset = index * 4;
-                let coverage = mask[offset + 2] as f32 / 255.0;
-                if coverage == 0.0 {
-                    continue;
-                }
-                let panel_alpha = pixels[offset + 3] as f32 / 255.0;
-                let out_alpha = coverage + panel_alpha * (1.0 - coverage);
-                for channel in 0..3 {
-                    let panel = pixels[offset + channel] as f32 / 255.0;
-                    let blended = (coverage + panel * panel_alpha * (1.0 - coverage)) / out_alpha;
-                    pixels[offset + channel] = (blended * 255.0) as u8;
-                }
-                pixels[offset + 3] = (out_alpha * 255.0) as u8;
-            }
+            let coverage: Vec<u8> = mask
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|pixel| pixel[2])
+                .collect();
+            composite_status_text(pixmap.data_mut(), &coverage);
 
             std::ptr::copy_nonoverlapping(pixmap.data().as_ptr(), self.bits_ptr, byte_count);
             for pixel in std::slice::from_raw_parts_mut(self.bits_ptr, byte_count)
@@ -1410,6 +1417,21 @@ mod tests {
         assert!(!text.contains("Presentation Mode On"));
         assert!(text.contains("clicks suppressed"));
         assert!(text.contains(hotkey_binding(Hotkey::TogglePresentation).shortcut));
+    }
+
+    #[test]
+    fn status_text_composites_white_over_the_panel() {
+        let mut panel = [0u8, 0, 0, 0];
+        composite_status_text(&mut panel, &[128]);
+        assert_eq!(panel, [128, 128, 128, 128]);
+
+        let mut panel = [255, 0, 0, 255];
+        composite_status_text(&mut panel, &[255]);
+        assert_eq!(panel, [255, 255, 255, 255]);
+
+        let mut panel = [10, 20, 30, 40];
+        composite_status_text(&mut panel, &[0]);
+        assert_eq!(panel, [10, 20, 30, 40]);
     }
 
     #[test]
