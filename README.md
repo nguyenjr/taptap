@@ -10,7 +10,7 @@
 - **Spring-driven animation** — damped oscillators drive translation, wrist tilt, and scaling. Rapid clicks compound combo heat, winding the hand up for harder strikes.
 - **Cartoon impact effects** — tapered comic rays, staggered burst timing, and secondary shockwave arcs around the fingertip.
 - **Procedural audio** — five built-in click sounds (Wood Knock, Click, Bell, balloon-pop Pop, and Jingle Bell) generated in memory with no asset files. Combo heat raises pitch and intensity; volume runs from Off to 100%.
-- **Presentation Mode** — while the overlay is Active, suppresses mouse clicks globally while keeping the animation and sound, so you can point at screen elements without activating them. Keyboard hotkeys remain the way out.
+- **Presentation Mode** — while the overlay is Active, suppresses mouse clicks globally while keeping the animation and sound, so you can point at screen elements without activating them. A status line at the bottom-right of the screen shows when it is on and names the exit hotkey.
 - **Customizable hand size** — presets (75%, 100%, 135%, 175%) plus 10% steps, clamped to 50–200%.
 - **Hand styles** — Classic and Gingerbread, with the same geometry and hotspot; the Gingerbread Hand is light brown with white icing piping and a squiggle cuff.
 - **Robust failsafes** — restores the system cursors on exit, crash, or emergency termination.

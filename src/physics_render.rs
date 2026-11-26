@@ -336,13 +336,7 @@ impl PokeAnimator {
         }
     }
 
-    pub fn render_bgra(
-        &mut self,
-        dpi_scale: f32,
-        user_scale: f32,
-        presentation_mode: bool,
-        hand_style: HandStyle,
-    ) -> &[u8] {
+    pub fn render_bgra(&mut self, dpi_scale: f32, user_scale: f32, hand_style: HandStyle) -> &[u8] {
         self.canvas.fill(Color::TRANSPARENT);
 
         let effect_scale = (dpi_scale * user_scale.sqrt()).clamp(0.6, 2.5);
@@ -378,20 +372,6 @@ impl PokeAnimator {
             transform,
             None,
         );
-
-        if presentation_mode {
-            if let Some(path) =
-                PathBuilder::from_circle(HOTSPOT_X as f32, HOTSPOT_Y as f32, 8.0 * effect_scale)
-            {
-                let stroke_paint = solid_paint(255, 65, 54, 220);
-                let stroke = Stroke {
-                    width: 2.5 * effect_scale,
-                    ..Default::default()
-                };
-                self.canvas
-                    .stroke_path(&path, &stroke_paint, &stroke, Transform::default(), None);
-            }
-        }
 
         let data = self.canvas.data_mut();
         for pixel in data.as_chunks_mut::<4>().0 {

@@ -1,15 +1,21 @@
 use crate::overlay_state::{Command, OverlayState};
-use crate::platform::{Effect, Event, Hotkey, MenuAction, Platform};
+use crate::platform::{Effect, Event, Hotkey, MenuAction, NotifyKind, Platform};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub struct App {
     state: Arc<OverlayState>,
     quit: bool,
+    seen_failures: HashSet<String>,
 }
 
 impl App {
     pub fn new(state: Arc<OverlayState>) -> Self {
-        Self { state, quit: false }
+        Self {
+            state,
+            quit: false,
+            seen_failures: HashSet::new(),
+        }
     }
 
     #[cfg(test)]
@@ -71,18 +77,35 @@ impl App {
                 platform.emit(Effect::StateChanged);
             }
             Event::SettingsLoadFailed(message) | Event::SettingsSaveFailed(message) => {
-                platform.emit(Effect::ReportError(message));
+                self.report_failure(message, platform);
             }
-            Event::StartupFailed(message) => platform.emit(Effect::ReportError(message)),
+            Event::StartupFailed(messages) => self.report_failures(messages, platform),
             Event::RenderFailed(message) => {
-                platform.emit(Effect::ReportError(message));
+                self.report_failure(message, platform);
                 self.shutdown(platform, true);
             }
             Event::MessageLoopFailed => {
-                platform.emit(Effect::ReportError("GetMessage failed".to_string()));
+                self.report_failure("The message loop failed.".to_string(), platform);
                 self.shutdown(platform, true);
             }
             Event::Shutdown => self.shutdown(platform, false),
+        }
+    }
+
+    fn report_failure(&mut self, text: String, platform: &mut dyn Platform) {
+        self.report_failures(vec![text], platform);
+    }
+
+    fn report_failures(&mut self, messages: Vec<String>, platform: &mut dyn Platform) {
+        let lines: Vec<String> = messages
+            .into_iter()
+            .filter(|text| note_if_new(NotifyKind::Failure, text, &mut self.seen_failures))
+            .collect();
+        if !lines.is_empty() {
+            platform.emit(Effect::Notify {
+                kind: NotifyKind::Failure,
+                text: lines.join("\n"),
+            });
         }
     }
 
@@ -119,13 +142,23 @@ impl App {
     }
 }
 
+fn note_if_new(kind: NotifyKind, text: &str, seen: &mut HashSet<String>) -> bool {
+    match kind {
+        NotifyKind::Info => true,
+        NotifyKind::Failure => seen.insert(text.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{note_if_new, App};
     use crate::hand_art::HandStyle;
     use crate::overlay_state::OverlayState;
-    use crate::platform::{Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent};
+    use crate::platform::{
+        Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent, NotifyKind,
+    };
     use crate::settings::{Settings, SoundPreset};
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
@@ -244,7 +277,10 @@ mod tests {
         assert!(!app.is_quit());
         assert_eq!(
             platform.effects,
-            vec![Effect::ReportError("bad file".to_string())]
+            vec![Effect::Notify {
+                kind: NotifyKind::Failure,
+                text: "bad file".to_string()
+            }]
         );
 
         let mut platform = FakePlatform::new(vec![]);
@@ -256,7 +292,10 @@ mod tests {
         assert!(!app.is_quit());
         assert_eq!(
             platform.effects,
-            vec![Effect::ReportError("save failed".to_string())]
+            vec![Effect::Notify {
+                kind: NotifyKind::Failure,
+                text: "save failed".to_string()
+            }]
         );
     }
 
@@ -309,7 +348,10 @@ mod tests {
     fn render_failure_shuts_down_cleanly() {
         let (app, effects) = run(vec![Event::RenderFailed("DIB failed".to_string())]);
         assert!(app.is_quit());
-        assert!(effects.contains(&Effect::ReportError("DIB failed".to_string())));
+        assert!(effects.contains(&Effect::Notify {
+            kind: NotifyKind::Failure,
+            text: "DIB failed".to_string()
+        }));
         assert!(effects.contains(&Effect::PostQuit));
         assert!(effects.contains(&Effect::RestoreSystemCursors));
     }
@@ -345,8 +387,70 @@ mod tests {
     #[test]
     fn startup_failure_is_reported_through_the_seam() {
         let message = "Failed to register hotkey: Active (Ctrl+Shift+P)".to_string();
-        let (_, effects) = run(vec![Event::StartupFailed(message.clone())]);
-        assert!(effects.contains(&Effect::ReportError(message)));
+        let (_, effects) = run(vec![Event::StartupFailed(vec![message.clone()])]);
+        assert!(effects.contains(&Effect::Notify {
+            kind: NotifyKind::Failure,
+            text: message
+        }));
+    }
+
+    #[test]
+    fn startup_failures_are_aggregated_into_one_message() {
+        let (_, effects) = run(vec![Event::StartupFailed(vec![
+            "First failure.".to_string(),
+            "Second failure.".to_string(),
+        ])]);
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|effect| matches!(effect, Effect::Notify { .. }))
+                .count(),
+            1
+        );
+        assert!(effects.contains(&Effect::Notify {
+            kind: NotifyKind::Failure,
+            text: "First failure.\nSecond failure.".to_string()
+        }));
+    }
+
+    #[test]
+    fn identical_failures_are_reported_once_per_session() {
+        let mut platform = FakePlatform::new(vec![]);
+        let mut app = App::new(Arc::new(OverlayState::new()));
+        app.handle(
+            Event::SettingsSaveFailed("Save failed.".to_string()),
+            &mut platform,
+        );
+        app.handle(
+            Event::SettingsLoadFailed("Save failed.".to_string()),
+            &mut platform,
+        );
+        app.handle(
+            Event::SettingsSaveFailed("A different failure.".to_string()),
+            &mut platform,
+        );
+        assert_eq!(
+            platform.effects,
+            vec![
+                Effect::Notify {
+                    kind: NotifyKind::Failure,
+                    text: "Save failed.".to_string()
+                },
+                Effect::Notify {
+                    kind: NotifyKind::Failure,
+                    text: "A different failure.".to_string()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn informational_messages_are_not_deduplicated() {
+        let mut seen = HashSet::new();
+        assert!(note_if_new(NotifyKind::Info, "Notice.", &mut seen));
+        assert!(note_if_new(NotifyKind::Info, "Notice.", &mut seen));
+        assert!(note_if_new(NotifyKind::Failure, "Failure.", &mut seen));
+        assert!(!note_if_new(NotifyKind::Failure, "Failure.", &mut seen));
     }
 
     #[test]
