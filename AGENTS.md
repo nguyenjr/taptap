@@ -17,7 +17,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 ## Architecture
 
 - `src/main.rs` — entrypoint and all Win32: layered window, Presentation Mode status window, low-level mouse hook, tray menu, render thread, message loop, single-instance mutex `Local\TapTap_SingleInstance_Mutex` (second launch shows an "already running" message then exits).
-- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
+- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume, plus per-session failure-notification bookkeeping; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
 - `src/platform.rs` — `Platform` trait and `Event`/`Effect` enums are the seam; test-only `FakePlatform` lets logic be tested without Windows. State changes cross it as one `StateChanged` effect, not per-value writes.
 - `src/app.rs` — maps events to commands and emits side effects; holds no state of its own. Put event routing here, state rules in `overlay_state.rs`, Win32 fan-out in `main.rs`.
 - Hotkeys: `HOTKEY_BINDINGS` in `main.rs` holds IDs 1–5, `Ctrl+Shift`, `MOD_NOREPEAT` and raw VK codes. A new/changed hotkey means editing that table, `Hotkey` in `platform.rs`, its `app.rs` mapping, and the README table.

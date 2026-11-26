@@ -104,6 +104,7 @@ struct HotkeyBinding {
     vk: u32,
     label: &'static str,
     menu_label: &'static str,
+    shortcut: &'static str,
 }
 
 const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
@@ -113,6 +114,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x50,
         label: "Active (Ctrl+Shift+P)",
         menu_label: "Active (Ctrl+Shift+P)",
+        shortcut: "Ctrl+Shift+P",
     },
     HotkeyBinding {
         hotkey: Hotkey::TogglePresentation,
@@ -120,6 +122,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x4D,
         label: "Presentation Mode (Ctrl+Shift+M)",
         menu_label: "Presentation Mode (Ctrl+Shift+M)",
+        shortcut: "Ctrl+Shift+M",
     },
     HotkeyBinding {
         hotkey: Hotkey::Quit,
@@ -127,6 +130,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x51,
         label: "Quit (Ctrl+Shift+Q)",
         menu_label: "Quit (Ctrl+Shift+Q)",
+        shortcut: "Ctrl+Shift+Q",
     },
     HotkeyBinding {
         hotkey: Hotkey::ScaleUp,
@@ -134,6 +138,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: VK_OEM_PLUS.0 as u32,
         label: "Increase Size (Ctrl+Shift+=)",
         menu_label: "Increase Size (+10%) [Ctrl+Shift+=]",
+        shortcut: "Ctrl+Shift+=",
     },
     HotkeyBinding {
         hotkey: Hotkey::ScaleDown,
@@ -141,20 +146,32 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: VK_OEM_MINUS.0 as u32,
         label: "Decrease Size (Ctrl+Shift+-)",
         menu_label: "Decrease Size (-10%) [Ctrl+Shift+-]",
+        shortcut: "Ctrl+Shift+-",
     },
 ];
+
+fn notify_caption(kind: NotifyKind) -> &'static str {
+    match kind {
+        NotifyKind::Failure => "TapTap - Error",
+        NotifyKind::Info => "TapTap",
+    }
+}
 
 fn notify_user(kind: NotifyKind, text: &str) {
     if cfg!(debug_assertions) && kind == NotifyKind::Failure {
         eprintln!("TapTap: {text}");
     }
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let (caption, style) = match kind {
-        NotifyKind::Failure => (w!("TapTap - Error"), MB_OK | MB_ICONERROR),
-        NotifyKind::Info => (w!("TapTap"), MB_OK | MB_ICONINFORMATION),
+    let caption: Vec<u16> = notify_caption(kind)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let style = match kind {
+        NotifyKind::Failure => MB_OK | MB_ICONERROR,
+        NotifyKind::Info => MB_OK | MB_ICONINFORMATION,
     };
     unsafe {
-        let _ = MessageBoxW(None, PCWSTR(wide.as_ptr()), caption, style);
+        let _ = MessageBoxW(None, PCWSTR(wide.as_ptr()), PCWSTR(caption.as_ptr()), style);
     }
 }
 
@@ -162,8 +179,11 @@ fn duplicate_launch_message() -> &'static str {
     "TapTap is already running."
 }
 
-fn status_text() -> &'static str {
-    "Presentation Mode On — clicks suppressed · Ctrl+Shift+M to exit"
+fn status_text() -> String {
+    format!(
+        "Presentation Mode — clicks suppressed · {} to exit",
+        hotkey_binding(Hotkey::TogglePresentation).shortcut
+    )
 }
 
 fn hotkey_binding(hotkey: Hotkey) -> &'static HotkeyBinding {
@@ -1386,9 +1406,16 @@ mod tests {
     #[test]
     fn status_text_names_the_state_and_exit_hotkey() {
         let text = status_text();
-        assert!(text.contains("Presentation Mode On"));
+        assert!(text.contains("Presentation Mode"));
+        assert!(!text.contains("Presentation Mode On"));
         assert!(text.contains("clicks suppressed"));
-        assert!(text.contains("Ctrl+Shift+M"));
+        assert!(text.contains(hotkey_binding(Hotkey::TogglePresentation).shortcut));
+    }
+
+    #[test]
+    fn info_notification_uses_a_plain_caption() {
+        assert_eq!(notify_caption(NotifyKind::Info), "TapTap");
+        assert_eq!(notify_caption(NotifyKind::Failure), "TapTap - Error");
     }
 
     fn test_window() -> HWND {

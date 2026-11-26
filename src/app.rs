@@ -1,21 +1,15 @@
 use crate::overlay_state::{Command, OverlayState};
 use crate::platform::{Effect, Event, Hotkey, MenuAction, NotifyKind, Platform};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 pub struct App {
     state: Arc<OverlayState>,
     quit: bool,
-    seen_failures: HashSet<String>,
 }
 
 impl App {
     pub fn new(state: Arc<OverlayState>) -> Self {
-        Self {
-            state,
-            quit: false,
-            seen_failures: HashSet::new(),
-        }
+        Self { state, quit: false }
     }
 
     #[cfg(test)]
@@ -99,7 +93,7 @@ impl App {
     fn report_failures(&mut self, messages: Vec<String>, platform: &mut dyn Platform) {
         let lines: Vec<String> = messages
             .into_iter()
-            .filter(|text| note_if_new(NotifyKind::Failure, text, &mut self.seen_failures))
+            .filter(|text| self.state.note_failure(text))
             .collect();
         if !lines.is_empty() {
             platform.emit(Effect::Notify {
@@ -142,23 +136,15 @@ impl App {
     }
 }
 
-fn note_if_new(kind: NotifyKind, text: &str, seen: &mut HashSet<String>) -> bool {
-    match kind {
-        NotifyKind::Info => true,
-        NotifyKind::Failure => seen.insert(text.to_owned()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{note_if_new, App};
+    use super::App;
     use crate::hand_art::HandStyle;
     use crate::overlay_state::OverlayState;
     use crate::platform::{
         Effect, Event, FakePlatform, Hotkey, MenuAction, MouseButtonEvent, NotifyKind,
     };
     use crate::settings::{Settings, SoundPreset};
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     fn run(events: Vec<Event>) -> (App, Vec<Effect>) {
@@ -442,15 +428,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn informational_messages_are_not_deduplicated() {
-        let mut seen = HashSet::new();
-        assert!(note_if_new(NotifyKind::Info, "Notice.", &mut seen));
-        assert!(note_if_new(NotifyKind::Info, "Notice.", &mut seen));
-        assert!(note_if_new(NotifyKind::Failure, "Failure.", &mut seen));
-        assert!(!note_if_new(NotifyKind::Failure, "Failure.", &mut seen));
     }
 
     #[test]
