@@ -1,4 +1,4 @@
-use crate::hand_art;
+use crate::hand_art::{HandArtParams, HandStyle, HAND_STYLES};
 use crate::spring::Spring;
 use rand::Rng;
 use resvg::usvg::{Options, Tree};
@@ -15,20 +15,25 @@ const SVG_TIP_Y: f32 = 22.0;
 const BASE_ANGLE_DEG: f32 = -22.0;
 const BASE_HAND_SCALE: f32 = 0.45;
 
-fn hand_svg() -> String {
-    let silhouette = hand_art::glove_silhouette();
-    let glove = hand_art::glove_markup(6.5, 5.0, 5.0);
+fn hand_svg(style: HandStyle) -> String {
+    let binding = style.binding();
+    let silhouette = (binding.silhouette)();
+    let glove = crate::hand_art::hand_markup(style, HandArtParams::new(6.5, 5.0, 5.0));
+    let arm = binding.arm;
+    let gradient_top = arm.gradient_top;
+    let gradient_bottom = arm.gradient_bottom;
+    let arm_path = arm.path;
     format!(
         r##"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 320" width="240" height="320">
   <defs>
-    <linearGradient id="armFade" x1="0" y1="185" x2="0" y2="295" gradientUnits="userSpaceOnUse">
+    <linearGradient id="armFade" x1="0" y1="{gradient_top}" x2="0" y2="{gradient_bottom}" gradientUnits="userSpaceOnUse">
       <stop offset="0%" stop-color="#000000" stop-opacity="1.0" />
       <stop offset="55%" stop-color="#000000" stop-opacity="0.85" />
       <stop offset="100%" stop-color="#000000" stop-opacity="0.0" />
     </linearGradient>
   </defs>
-  <path d="M 88 182 L 146 182 L 154 295 L 80 295 Z" fill="url(#armFade)" />
+  <path d="{arm_path}" fill="url(#armFade)" />
   <g transform="translate(4, 6)" opacity="0.22">
     {silhouette}
   </g>
@@ -72,7 +77,7 @@ struct ImpactBurst {
 }
 
 pub struct PokeAnimator {
-    hand_pixmap: Pixmap,
+    hand_pixmaps: Vec<Pixmap>,
     canvas: Pixmap,
     poke_spring: Spring,
     tilt_spring: Spring,
@@ -84,13 +89,20 @@ pub struct PokeAnimator {
 impl PokeAnimator {
     pub fn new() -> Self {
         let opt = Options::default();
-        let svg = hand_svg();
-        let tree = Tree::from_str(&svg, &opt).expect("Valid embedded SVG");
-        let mut hand_pixmap = Pixmap::new(240, 320).unwrap();
-        resvg::render(&tree, Transform::default(), &mut hand_pixmap.as_mut());
+        let hand_pixmaps = HAND_STYLES
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let svg = hand_svg(HandStyle::from_index(index as u8));
+                let tree = Tree::from_str(&svg, &opt).expect("Valid embedded SVG");
+                let mut pixmap = Pixmap::new(240, 320).unwrap();
+                resvg::render(&tree, Transform::default(), &mut pixmap.as_mut());
+                pixmap
+            })
+            .collect();
 
         Self {
-            hand_pixmap,
+            hand_pixmaps,
             canvas: Pixmap::new(CANVAS_SIZE, CANVAS_SIZE).unwrap(),
             poke_spring: Spring::new(0.0, 480.0, 14.0),
             tilt_spring: Spring::new(0.0, 380.0, 12.0),
@@ -329,6 +341,7 @@ impl PokeAnimator {
         dpi_scale: f32,
         user_scale: f32,
         presentation_mode: bool,
+        hand_style: HandStyle,
     ) -> &[u8] {
         self.canvas.fill(Color::TRANSPARENT);
 
@@ -357,8 +370,14 @@ impl PokeAnimator {
             quality: tiny_skia::FilterQuality::Bilinear,
         };
 
-        self.canvas
-            .draw_pixmap(0, 0, self.hand_pixmap.as_ref(), &paint, transform, None);
+        self.canvas.draw_pixmap(
+            0,
+            0,
+            self.hand_pixmaps[hand_style.as_index()].as_ref(),
+            &paint,
+            transform,
+            None,
+        );
 
         if presentation_mode {
             if let Some(path) =
@@ -379,5 +398,17 @@ impl PokeAnimator {
             pixel.swap(0, 2);
         }
         self.canvas.data()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
+
+    #[test]
+    fn hotspot_and_canvas_are_unchanged() {
+        assert_eq!(CANVAS_SIZE, 512);
+        assert_eq!(HOTSPOT_X, 180);
+        assert_eq!(HOTSPOT_Y, 150);
     }
 }

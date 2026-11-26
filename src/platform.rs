@@ -1,3 +1,4 @@
+use crate::hand_art::HandStyle;
 use crate::settings::{Settings, SoundPreset};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub enum MenuAction {
     ScaleUp,
     ScaleDown,
     SetScale(u32),
+    SetHand(HandStyle),
     SetSound(SoundPreset),
     SetVolume(u8),
     Quit,

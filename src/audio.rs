@@ -6,7 +6,7 @@ use std::io::Cursor;
 pub struct AudioEngine {
     _stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
-    wav_data: [Vec<u8>; 4],
+    wav_data: [Vec<u8>; 5],
 }
 
 impl AudioEngine {
@@ -60,6 +60,7 @@ impl AudioEngine {
                 noise_gain: 1.0,
                 noise_decay: 190.0,
             }),
+            encode_wav(&generate_jingle_bell_pcm()),
         ];
 
         match OutputStream::try_default() {
@@ -112,6 +113,11 @@ struct SoundParams {
     noise_decay: f32,
 }
 
+fn next_noise(state: &mut u32) -> f32 {
+    *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+    ((*state >> 8) as f32 / 8_388_608.0) - 1.0
+}
+
 fn generate_wav(params: &SoundParams) -> Vec<u8> {
     let sample_rate = 44100u32;
     let num_samples = (sample_rate as f32 * params.duration) as usize;
@@ -126,11 +132,7 @@ fn generate_wav(params: &SoundParams) -> Vec<u8> {
         let noise = if params.noise_gain == 0.0 {
             0.0
         } else {
-            noise_state = noise_state
-                .wrapping_mul(1_664_525)
-                .wrapping_add(1_013_904_223);
-            let white = ((noise_state >> 8) as f32 / 8_388_608.0) - 1.0;
-            white * params.noise_gain * (-t * params.noise_decay).exp()
+            next_noise(&mut noise_state) * params.noise_gain * (-t * params.noise_decay).exp()
         };
         let signal =
             ((2.0 * std::f32::consts::PI * freq * t).sin() + click_transient) * env + noise;
@@ -139,6 +141,44 @@ fn generate_wav(params: &SoundParams) -> Vec<u8> {
     }
 
     encode_wav(&pcm)
+}
+
+fn generate_jingle_bell_pcm() -> Vec<i16> {
+    let sample_rate = 44100u32;
+    let num_samples = (sample_rate as f32 * 0.32) as usize;
+    let partials = [
+        (1.0f32, 1.0f32, 16.0f32),
+        (1.51, 0.55, 20.0),
+        (2.0, 0.40, 26.0),
+        (2.67, 0.25, 34.0),
+        (3.45, 0.15, 44.0),
+    ];
+    let strikes = [(0.0f32, 1.0f32), (0.075, 0.6f32)];
+    let mut pcm = Vec::with_capacity(num_samples);
+    let mut noise_state = 0x9E37_79B9u32;
+
+    for i in 0..num_samples {
+        let t = i as f32 / sample_rate as f32;
+        let white = next_noise(&mut noise_state);
+        let mut signal = 0.0f32;
+
+        for &(at, level) in &strikes {
+            if t < at {
+                continue;
+            }
+            let age = t - at;
+            for &(ratio, amplitude, decay) in &partials {
+                signal += (2.0 * std::f32::consts::PI * 1180.0 * ratio * age).sin()
+                    * amplitude
+                    * (-age * decay).exp();
+            }
+            signal += white * 0.22 * (-age * 180.0).exp();
+            signal *= level;
+        }
+        let sample = (signal * 0.2 * 26000.0).clamp(-32767.0, 32767.0) as i16;
+        pcm.push(sample);
+    }
+    pcm
 }
 
 fn encode_wav(pcm: &[i16]) -> Vec<u8> {
@@ -165,8 +205,18 @@ fn encode_wav(pcm: &[i16]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::AudioEngine;
+    use super::{generate_jingle_bell_pcm, AudioEngine};
     use crate::settings::SoundPreset;
+
+    #[test]
+    fn jingle_bell_has_two_strikes() {
+        let pcm = generate_jingle_bell_pcm();
+        assert!(pcm.len() > 10000);
+        let first = pcm[..1323].iter().map(|s| s.abs()).max().unwrap_or(0);
+        let second = pcm[3307..4630].iter().map(|s| s.abs()).max().unwrap_or(0);
+        assert!(first > 3000, "first strike too quiet: {first}");
+        assert!(second > 2000, "second strike too quiet: {second}");
+    }
 
     #[test]
     fn play_poke_accepts_every_preset() {
@@ -176,6 +226,7 @@ mod tests {
             SoundPreset::Click,
             SoundPreset::Bell,
             SoundPreset::Pop,
+            SoundPreset::JingleBell,
         ] {
             engine.play_poke(4.0, preset, 50);
         }

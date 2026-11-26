@@ -29,7 +29,7 @@ fn main() {
   </g>
 </svg>
 "##,
-        hand_art::glove_markup(8.5, 6.5, 6.0)
+        hand_art::glove_markup(hand_art::HandArtParams::new(8.5, 6.5, 6.0))
     );
     let tree = resvg::usvg::Tree::from_str(&icon_svg, &opt).expect("Valid icon SVG");
     let mut pixmap = tiny_skia::Pixmap::new(256, 256).expect("Failed to allocate icon pixmap");

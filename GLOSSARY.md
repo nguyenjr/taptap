@@ -5,7 +5,7 @@ TapTap replaces the Windows pointer with an animated hand. This glossary names t
 ## Language
 
 **Overlay State**:
-The current combination of Active, Presentation Mode, Hand Size, Click Sound and Volume that governs how the Overlay behaves.
+The current combination of Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume that governs how the Overlay behaves.
 _Avoid_: AppState, runtime state, settings snapshot
 
 **Overlay**:
@@ -44,9 +44,21 @@ _Avoid_: Burst, effect, ray
 The sound played when the Hand Pokes.
 _Avoid_: Audio preset, sound effect
 
+**Hand Style**:
+The appearance variant of the Hand — Classic or Gingerbread.
+_Avoid_: Skin, theme, costume
+
+**Gingerbread Hand**:
+A cookie-coloured Hand with white icing piping, icing-dot knuckles, and an icing-squiggle cuff.
+_Avoid_: Cookie hand, holiday hand
+
 **Hand Size**:
 How large the Hand appears, expressed as a percentage of its default size.
 _Avoid_: Scale, zoom
+
+**Jingle Bell**:
+A bright, two-strike bell sound, available as a Click Sound.
+_Avoid_: Chime, sleigh bell, ring
 
 **Volume**:
 How loud a Click Sound plays, from silent to full.
