@@ -30,6 +30,12 @@ pub enum MouseButtonEvent {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyKind {
+    Failure,
+    Info,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Start,
@@ -37,7 +43,7 @@ pub enum Event {
     Menu(MenuAction),
     MouseButton(MouseButtonEvent),
     RenderFailed(String),
-    StartupFailed(String),
+    StartupFailed(Vec<String>),
     MessageLoopFailed,
     SettingsLoaded(Settings),
     SettingsLoadFailed(String),
@@ -56,7 +62,7 @@ pub enum Effect {
     RestoreSystemCursors,
     StateChanged,
     PostQuit,
-    ReportError(String),
+    Notify { kind: NotifyKind, text: String },
     LoadSettings,
     SaveSettings(Settings),
 }

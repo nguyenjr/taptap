@@ -6,7 +6,7 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 
 - One-time setup: `git config core.hooksPath .githooks` enables `.githooks/pre-push`, which rejects direct pushes to `main`.
 - `cargo build --release` — shippable binary at `target\release\taptap.exe`. Release enables `windows_subsystem = "windows"` (no console), `opt-level="z"`, LTO, strip.
-- `cargo run` / `cargo build` — debug keeps a console. Errors are reported via `eprintln!` (`Effect::ReportError`), so use a debug build to see startup failures.
+- `cargo run` / `cargo build` — debug keeps a console. `Effect::Notify` shows user-visible messages in a message box; debug builds also print failures to `eprintln!`, which is useful for detailed startup diagnostics.
 - `cargo test` — all tests are inline `#[cfg(test)] mod tests` in `src/*.rs`; there are no integration tests.
   - `cargo test app::tests` — pure state-machine tests via `FakePlatform`; no GUI needed.
   - `cargo test settings::tests` — temp-dir files, safe.
@@ -16,8 +16,8 @@ Windows-only Rust app: Win32 overlay driven by the `windows` 0.58 crate. Require
 
 ## Architecture
 
-- `src/main.rs` — entrypoint and all Win32: layered window, low-level mouse hook, tray menu, render thread, message loop, single-instance mutex `Local\TapTap_SingleInstance_Mutex` (second launch exits silently).
-- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
+- `src/main.rs` — entrypoint and all Win32: layered window, Presentation Mode status window, low-level mouse hook, tray menu, render thread, message loop, single-instance mutex `Local\TapTap_SingleInstance_Mutex` (second launch shows an "already running" message then exits).
+- `src/overlay_state.rs` — Overlay State is the single authority for Active, Presentation Mode, Hand Style, Hand Size, Click Sound and Volume, plus per-session failure-notification bookkeeping; `snapshot()` / `apply(Command)` are its interface, with atomics hidden as implementation detail.
 - `src/platform.rs` — `Platform` trait and `Event`/`Effect` enums are the seam; test-only `FakePlatform` lets logic be tested without Windows. State changes cross it as one `StateChanged` effect, not per-value writes.
 - `src/app.rs` — maps events to commands and emits side effects; holds no state of its own. Put event routing here, state rules in `overlay_state.rs`, Win32 fan-out in `main.rs`.
 - Hotkeys: `HOTKEY_BINDINGS` in `main.rs` holds IDs 1–5, `Ctrl+Shift`, `MOD_NOREPEAT` and raw VK codes. A new/changed hotkey means editing that table, `Hotkey` in `platform.rs`, its `app.rs` mapping, and the README table.

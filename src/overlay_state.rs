@@ -1,6 +1,8 @@
 use crate::hand_art::HandStyle;
 use crate::settings::{Settings, SoundPreset};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverlayStateSnapshot {
@@ -52,6 +54,7 @@ pub struct OverlayState {
     hand_style: AtomicU8,
     sound: AtomicU8,
     volume: AtomicU8,
+    seen_failures: Mutex<HashSet<String>>,
 }
 
 impl Default for OverlayState {
@@ -70,7 +73,16 @@ impl OverlayState {
             hand_style: AtomicU8::new(defaults.hand_style.as_u8()),
             sound: AtomicU8::new(defaults.sound.as_u8()),
             volume: AtomicU8::new(defaults.volume),
+            seen_failures: Mutex::new(HashSet::new()),
         }
+    }
+
+    pub fn note_failure(&self, text: &str) -> bool {
+        let mut seen = self
+            .seen_failures
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        seen.insert(text.to_owned())
     }
 
     pub fn snapshot(&self) -> OverlayStateSnapshot {
@@ -150,6 +162,14 @@ mod tests {
             state.apply(*command);
         }
         state.snapshot()
+    }
+
+    #[test]
+    fn failure_is_noted_once_per_session() {
+        let state = OverlayState::new();
+        assert!(state.note_failure("Save failed."));
+        assert!(!state.note_failure("Save failed."));
+        assert!(state.note_failure("Load failed."));
     }
 
     #[test]

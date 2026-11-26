@@ -17,7 +17,7 @@ use hand_art::{glove_markup, HandArtParams, HandStyle, HAND_STYLES};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use overlay_state::{OverlayState, OverlayStateSnapshot};
 use physics_render::{PokeAnimator, CANVAS_SIZE, HOTSPOT_X, HOTSPOT_Y};
-use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, Platform};
+use platform::{Effect, Event, Hotkey, MenuAction, MouseButtonEvent, NotifyKind, Platform};
 use resvg::usvg::{Options, Tree};
 use settings::{Settings, SoundPreset};
 use std::collections::VecDeque;
@@ -25,17 +25,21 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use tiny_skia::{Pixmap, Transform};
+use tiny_skia::{Color, FillRule, Paint, Path, PathBuilder, Pixmap, Transform};
 use tray_icon::{Icon, TrayIconBuilder};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, COLORREF, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM,
-    LRESULT, POINT, SIZE, WPARAM,
+    LRESULT, POINT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromPoint,
-    ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITOR_DEFAULTTONEAREST,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GetDC,
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject, SetBkMode,
+    SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH, DEFAULT_QUALITY, DIB_RGB_COLORS,
+    DT_CENTER, DT_SINGLELINE, DT_VCENTER, FF_DONTCARE, FW_BOLD, HBITMAP, HDC, HFONT, HGDIOBJ,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, OUT_DEFAULT_PRECIS,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -100,6 +104,7 @@ struct HotkeyBinding {
     vk: u32,
     label: &'static str,
     menu_label: &'static str,
+    shortcut: &'static str,
 }
 
 const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
@@ -109,6 +114,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x50,
         label: "Active (Ctrl+Shift+P)",
         menu_label: "Active (Ctrl+Shift+P)",
+        shortcut: "Ctrl+Shift+P",
     },
     HotkeyBinding {
         hotkey: Hotkey::TogglePresentation,
@@ -116,6 +122,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x4D,
         label: "Presentation Mode (Ctrl+Shift+M)",
         menu_label: "Presentation Mode (Ctrl+Shift+M)",
+        shortcut: "Ctrl+Shift+M",
     },
     HotkeyBinding {
         hotkey: Hotkey::Quit,
@@ -123,6 +130,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: 0x51,
         label: "Quit (Ctrl+Shift+Q)",
         menu_label: "Quit (Ctrl+Shift+Q)",
+        shortcut: "Ctrl+Shift+Q",
     },
     HotkeyBinding {
         hotkey: Hotkey::ScaleUp,
@@ -130,6 +138,7 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: VK_OEM_PLUS.0 as u32,
         label: "Increase Size (Ctrl+Shift+=)",
         menu_label: "Increase Size (+10%) [Ctrl+Shift+=]",
+        shortcut: "Ctrl+Shift+=",
     },
     HotkeyBinding {
         hotkey: Hotkey::ScaleDown,
@@ -137,8 +146,45 @@ const HOTKEY_BINDINGS: [HotkeyBinding; 5] = [
         vk: VK_OEM_MINUS.0 as u32,
         label: "Decrease Size (Ctrl+Shift+-)",
         menu_label: "Decrease Size (-10%) [Ctrl+Shift+-]",
+        shortcut: "Ctrl+Shift+-",
     },
 ];
+
+fn notify_caption(kind: NotifyKind) -> &'static str {
+    match kind {
+        NotifyKind::Failure => "TapTap - Error",
+        NotifyKind::Info => "TapTap",
+    }
+}
+
+fn notify_user(kind: NotifyKind, text: &str) {
+    if cfg!(debug_assertions) && kind == NotifyKind::Failure {
+        eprintln!("TapTap: {text}");
+    }
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption: Vec<u16> = notify_caption(kind)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let style = match kind {
+        NotifyKind::Failure => MB_OK | MB_ICONERROR,
+        NotifyKind::Info => MB_OK | MB_ICONINFORMATION,
+    };
+    unsafe {
+        let _ = MessageBoxW(None, PCWSTR(wide.as_ptr()), PCWSTR(caption.as_ptr()), style);
+    }
+}
+
+fn duplicate_launch_message() -> &'static str {
+    "TapTap is already running."
+}
+
+fn status_text() -> String {
+    format!(
+        "Presentation Mode — clicks suppressed · {} to exit",
+        hotkey_binding(Hotkey::TogglePresentation).shortcut
+    )
+}
 
 fn hotkey_binding(hotkey: Hotkey) -> &'static HotkeyBinding {
     HOTKEY_BINDINGS
@@ -452,6 +498,271 @@ impl Drop for RenderResources {
     }
 }
 
+fn rounded_rect_path(width: f32, height: f32, radius: f32) -> Option<Path> {
+    let mut builder = PathBuilder::new();
+    builder.move_to(radius, 0.0);
+    builder.line_to(width - radius, 0.0);
+    builder.quad_to(width, 0.0, width, radius);
+    builder.line_to(width, height - radius);
+    builder.quad_to(width, height, width - radius, height);
+    builder.line_to(radius, height);
+    builder.quad_to(0.0, height, 0.0, height - radius);
+    builder.line_to(0.0, radius);
+    builder.quad_to(0.0, 0.0, radius, 0.0);
+    builder.close();
+    builder.finish()
+}
+
+struct StatusWindow {
+    hwnd: HWND,
+    screen_dc: HDC,
+    mem_dc: HDC,
+    hbitmap: HBITMAP,
+    old_bitmap: HGDIOBJ,
+    font: HFONT,
+    old_font: HGDIOBJ,
+    bits_ptr: *mut u8,
+    width: usize,
+    height: usize,
+    dst_pt: POINT,
+    size: SIZE,
+    blend: BLENDFUNCTION,
+}
+
+impl StatusWindow {
+    fn new(class_name: PCWSTR, instance: HINSTANCE) -> Result<Self, String> {
+        unsafe {
+            let monitor = MonitorFromWindow(None, MONITOR_DEFAULTTOPRIMARY);
+            let mut monitor_info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
+                return Err("Could not locate the primary display.".to_string());
+            }
+
+            let work = monitor_info.rcWork;
+            let dpi =
+                query_monitor_dpi_scale((work.left + work.right) / 2, (work.top + work.bottom) / 2);
+            let width = (640.0 * dpi) as i32;
+            let height = (46.0 * dpi) as i32;
+            let margin = (18.0 * dpi) as i32;
+            let dst_pt = POINT {
+                x: work.right - width - margin,
+                y: work.bottom - height - margin,
+            };
+            let size = SIZE {
+                cx: width,
+                cy: height,
+            };
+
+            let hwnd = CreateWindowExW(
+                WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT
+                    | WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE,
+                class_name,
+                w!("TapTapStatus"),
+                WS_POPUP,
+                dst_pt.x,
+                dst_pt.y,
+                width,
+                height,
+                None,
+                None,
+                instance,
+                None,
+            )
+            .map_err(|error| format!("Could not create the status window: {error:?}"))?;
+
+            let screen_dc = GetDC(None);
+            let mem_dc = CreateCompatibleDC(screen_dc);
+            let bitmap_info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hbitmap = match CreateDIBSection(
+                mem_dc,
+                &bitmap_info,
+                DIB_RGB_COLORS,
+                &mut bits,
+                HANDLE::default(),
+                0,
+            ) {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    let _ = DeleteDC(mem_dc);
+                    let _ = ReleaseDC(None, screen_dc);
+                    let _ = DestroyWindow(hwnd);
+                    return Err(format!("Could not allocate the status surface: {error:?}"));
+                }
+            };
+            let old_bitmap = SelectObject(mem_dc, hbitmap);
+
+            let font = CreateFontW(
+                (16.0 * dpi) as i32,
+                0,
+                0,
+                0,
+                FW_BOLD.0 as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                DEFAULT_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
+                w!("Segoe UI"),
+            );
+            if font.0.is_null() {
+                let _ = SelectObject(mem_dc, old_bitmap);
+                let _ = DeleteObject(hbitmap);
+                let _ = DeleteDC(mem_dc);
+                let _ = ReleaseDC(None, screen_dc);
+                let _ = DestroyWindow(hwnd);
+                return Err("Could not create the status font.".to_string());
+            }
+            let old_font = SelectObject(mem_dc, font);
+
+            Ok(Self {
+                hwnd,
+                screen_dc,
+                mem_dc,
+                hbitmap,
+                old_bitmap,
+                font,
+                old_font,
+                bits_ptr: bits as *mut u8,
+                width: width as usize,
+                height: height as usize,
+                dst_pt,
+                size,
+                blend: BLENDFUNCTION {
+                    BlendOp: AC_SRC_OVER as u8,
+                    BlendFlags: 0,
+                    SourceConstantAlpha: 255,
+                    AlphaFormat: AC_SRC_ALPHA as u8,
+                },
+            })
+        }
+    }
+
+    fn render(&mut self) {
+        let pixel_count = self.width * self.height;
+        let byte_count = pixel_count * 4;
+        unsafe {
+            std::ptr::write_bytes(self.bits_ptr, 0, byte_count);
+            let mut text: Vec<u16> = status_text().encode_utf16().collect();
+            let padding = (self.height / 5) as i32;
+            let mut text_rect = RECT {
+                left: padding,
+                top: 0,
+                right: self.width as i32 - padding,
+                bottom: self.height as i32,
+            };
+            SetTextColor(self.mem_dc, COLORREF(0x00FFFFFF));
+            SetBkMode(self.mem_dc, TRANSPARENT);
+            DrawTextW(
+                self.mem_dc,
+                &mut text,
+                &mut text_rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+            );
+            let mask = std::slice::from_raw_parts(self.bits_ptr, byte_count).to_vec();
+
+            let mut pixmap = Pixmap::new(self.width as u32, self.height as u32)
+                .expect("Failed to allocate status pixmap");
+            pixmap.fill(Color::TRANSPARENT);
+            if let Some(path) = rounded_rect_path(
+                self.width as f32,
+                self.height as f32,
+                (self.height as f32) * 0.28,
+            ) {
+                let mut paint = Paint::default();
+                paint.set_color_rgba8(18, 18, 26, 215);
+                paint.anti_alias = true;
+                pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::default(), None);
+            }
+
+            let pixels = pixmap.data_mut();
+            for index in 0..pixel_count {
+                let offset = index * 4;
+                let coverage = mask[offset + 2] as f32 / 255.0;
+                if coverage == 0.0 {
+                    continue;
+                }
+                let panel_alpha = pixels[offset + 3] as f32 / 255.0;
+                let out_alpha = coverage + panel_alpha * (1.0 - coverage);
+                for channel in 0..3 {
+                    let panel = pixels[offset + channel] as f32 / 255.0;
+                    let blended = (coverage + panel * panel_alpha * (1.0 - coverage)) / out_alpha;
+                    pixels[offset + channel] = (blended * 255.0) as u8;
+                }
+                pixels[offset + 3] = (out_alpha * 255.0) as u8;
+            }
+
+            std::ptr::copy_nonoverlapping(pixmap.data().as_ptr(), self.bits_ptr, byte_count);
+            for pixel in std::slice::from_raw_parts_mut(self.bits_ptr, byte_count)
+                .as_chunks_mut::<4>()
+                .0
+            {
+                pixel.swap(0, 2);
+            }
+
+            let source_point = POINT { x: 0, y: 0 };
+            let _ = UpdateLayeredWindow(
+                self.hwnd,
+                self.screen_dc,
+                Some(&self.dst_pt),
+                Some(&self.size),
+                self.mem_dc,
+                Some(&source_point),
+                COLORREF(0),
+                Some(&self.blend),
+                ULW_ALPHA,
+            );
+        }
+    }
+
+    fn show(&mut self) {
+        self.render();
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    fn hide(&mut self) {
+        unsafe {
+            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        }
+    }
+}
+
+impl Drop for StatusWindow {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SelectObject(self.mem_dc, self.old_font);
+            let _ = SelectObject(self.mem_dc, self.old_bitmap);
+            let _ = DeleteObject(self.font);
+            let _ = DeleteObject(self.hbitmap);
+            let _ = DeleteDC(self.mem_dc);
+            let _ = ReleaseDC(None, self.screen_dc);
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
 fn spawn_render_thread(
     hwnd_raw: isize,
     rx: Receiver<InputEvent>,
@@ -512,7 +823,10 @@ fn spawn_render_thread(
         let (resources, bits_ptr) = match resources {
             Ok(resources) => (resources, bits_ptr),
             Err(error) => {
-                let _ = error_tx.send(format!("Failed to allocate DIBSection: {error:?}"));
+                if cfg!(debug_assertions) {
+                    eprintln!("TapTap: render surface error: {error:?}");
+                }
+                let _ = error_tx.send("Could not create the render surface.".to_string());
                 unsafe {
                     let _ = PostMessageW(hwnd, WM_APP, WPARAM(0), LPARAM(0));
                 }
@@ -578,11 +892,9 @@ fn spawn_render_thread(
                 let (mx, my) = ctx.mouse_position();
                 let dpi_scale = query_monitor_dpi_scale(mx, my);
                 let user_scale = snapshot.scale_pct as f32 / 100.0;
-                let pres_mode = snapshot.presentation;
 
                 animator.step(dt, user_scale);
-                let pixels =
-                    animator.render_bgra(dpi_scale, user_scale, pres_mode, snapshot.hand_style);
+                let pixels = animator.render_bgra(dpi_scale, user_scale, snapshot.hand_style);
 
                 std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits_ptr as *mut u8, pixels.len());
 
@@ -770,7 +1082,10 @@ fn register_hotkeys() -> Vec<String> {
     unsafe {
         for binding in HOTKEY_BINDINGS {
             if RegisterHotKey(None, binding.id, mods, binding.vk).is_err() {
-                failures.push(format!("Failed to register hotkey: {}", binding.label));
+                failures.push(format!(
+                    "Could not register the shortcut: {}.",
+                    binding.label
+                ));
             }
         }
     }
@@ -798,6 +1113,8 @@ struct Win32Platform {
     event_rx: Receiver<Event>,
     error_rx: Receiver<String>,
     error_tx: Sender<String>,
+    startup_failures: Vec<String>,
+    status: Option<StatusWindow>,
     hook: Option<HookGuard>,
     render_thread: Option<JoinHandle<()>>,
 }
@@ -808,6 +1125,8 @@ impl Win32Platform {
         controls: TrayControls,
         initial_cursor: POINT,
         state: Arc<OverlayState>,
+        status: Option<StatusWindow>,
+        initial_failures: Vec<String>,
     ) -> Self {
         let (input_tx, input_rx) = unbounded();
         let (event_tx, event_rx) = unbounded::<Event>();
@@ -821,17 +1140,21 @@ impl Win32Platform {
         ));
         let _ = HOOK_STATE.set(hook_ctx.clone());
 
+        let pending = VecDeque::new();
+
         Self {
             hwnd,
             controls,
             msg: MSG::default(),
-            pending: VecDeque::new(),
+            pending,
             state,
             hook_ctx,
             input_rx,
             event_rx,
             error_rx,
             error_tx,
+            startup_failures: initial_failures,
+            status,
             hook: None,
             render_thread: None,
         }
@@ -889,17 +1212,25 @@ impl Platform for Win32Platform {
     fn emit(&mut self, effect: Effect) {
         match effect {
             Effect::RegisterHotkeys => {
-                for failure in register_hotkeys() {
-                    self.pending.push_back(Event::StartupFailed(failure));
+                let failures = register_hotkeys();
+                if cfg!(debug_assertions) {
+                    for failure in &failures {
+                        eprintln!("TapTap: {failure}");
+                    }
                 }
+                self.startup_failures.extend(failures);
             }
             Effect::InstallMouseHook => unsafe {
                 let instance = GetModuleHandleW(None).expect("Failed to get module handle");
                 match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0) {
                     Ok(hook) => self.hook = Some(HookGuard(hook)),
-                    Err(error) => self.pending.push_back(Event::StartupFailed(format!(
-                        "Failed to install mouse hook: {error:?}"
-                    ))),
+                    Err(error) => {
+                        if cfg!(debug_assertions) {
+                            eprintln!("TapTap: mouse hook error: {error:?}");
+                        }
+                        self.startup_failures
+                            .push("Could not install the mouse hook.".to_string());
+                    }
                 }
             },
             Effect::RemoveMouseHook => self.hook = None,
@@ -911,6 +1242,10 @@ impl Platform for Win32Platform {
                     self.hook_ctx.clone(),
                 );
                 self.render_thread = Some(handle);
+                if !self.startup_failures.is_empty() {
+                    let messages = std::mem::take(&mut self.startup_failures);
+                    self.pending.push_back(Event::StartupFailed(messages));
+                }
             }
             Effect::StopRenderThread => {
                 self.hook_ctx.running.store(false, Ordering::SeqCst);
@@ -932,18 +1267,37 @@ impl Platform for Win32Platform {
                         let _ = ShowWindow(self.hwnd, SW_HIDE);
                     }
                 }
+                if let Some(status) = &mut self.status {
+                    if snapshot.active && snapshot.presentation {
+                        status.show();
+                    } else {
+                        status.hide();
+                    }
+                }
             }
             Effect::PostQuit => unsafe {
                 PostQuitMessage(0);
             },
-            Effect::ReportError(message) => eprintln!("TapTap: {message}"),
+            Effect::Notify { kind, text } => notify_user(kind, &text),
             Effect::LoadSettings => match Settings::load() {
                 Ok(settings) => self.pending.push_back(Event::SettingsLoaded(settings)),
-                Err(error) => self.pending.push_back(Event::SettingsLoadFailed(error)),
+                Err(error) => {
+                    if cfg!(debug_assertions) {
+                        eprintln!("TapTap: settings load error: {error}");
+                    }
+                    self.pending.push_back(Event::SettingsLoadFailed(
+                        "Could not read the settings file.".to_string(),
+                    ));
+                }
             },
             Effect::SaveSettings(settings) => {
                 if let Err(error) = settings.save() {
-                    self.pending.push_back(Event::SettingsSaveFailed(error));
+                    if cfg!(debug_assertions) {
+                        eprintln!("TapTap: settings save error: {error}");
+                    }
+                    self.pending.push_back(Event::SettingsSaveFailed(
+                        "Could not save the settings file.".to_string(),
+                    ));
                 }
             }
         }
@@ -957,6 +1311,7 @@ fn main() {
 
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(mutex);
+            notify_user(NotifyKind::Info, duplicate_launch_message());
             return;
         }
         mutex
@@ -1007,8 +1362,27 @@ fn main() {
         .expect("Failed to create overlay window");
 
         let controls = create_tray_icon();
+        let mut initial_failures = Vec::new();
+        let status = match StatusWindow::new(class_name, instance) {
+            Ok(status) => Some(status),
+            Err(error) => {
+                if cfg!(debug_assertions) {
+                    eprintln!("TapTap: {error}");
+                }
+                initial_failures
+                    .push("Could not create the Presentation status window.".to_string());
+                None
+            }
+        };
         let state = Arc::new(OverlayState::new());
-        let mut platform = Win32Platform::new(hwnd, controls, init_pt, state.clone());
+        let mut platform = Win32Platform::new(
+            hwnd,
+            controls,
+            init_pt,
+            state.clone(),
+            status,
+            initial_failures,
+        );
         let mut app = App::new(state);
 
         app.handle(Event::Start, &mut platform);
@@ -1023,6 +1397,26 @@ mod tests {
     use std::time::Duration;
     use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+
+    #[test]
+    fn duplicate_launch_message_names_the_running_instance() {
+        assert!(duplicate_launch_message().contains("already running"));
+    }
+
+    #[test]
+    fn status_text_names_the_state_and_exit_hotkey() {
+        let text = status_text();
+        assert!(text.contains("Presentation Mode"));
+        assert!(!text.contains("Presentation Mode On"));
+        assert!(text.contains("clicks suppressed"));
+        assert!(text.contains(hotkey_binding(Hotkey::TogglePresentation).shortcut));
+    }
+
+    #[test]
+    fn info_notification_uses_a_plain_caption() {
+        assert_eq!(notify_caption(NotifyKind::Info), "TapTap");
+        assert_eq!(notify_caption(NotifyKind::Failure), "TapTap - Error");
+    }
 
     fn test_window() -> HWND {
         unsafe {
@@ -1122,6 +1516,8 @@ mod tests {
             controls,
             POINT { x: 500, y: 500 },
             Arc::new(OverlayState::new()),
+            None,
+            Vec::new(),
         );
 
         let thread_id = unsafe { GetCurrentThreadId() };
